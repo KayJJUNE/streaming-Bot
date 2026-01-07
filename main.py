@@ -9,8 +9,8 @@ load_dotenv()
 
 # 봇 설정
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+intents.members = True  # Privileged Intent - Discord Developer Portal에서 활성화 필요
+# intents.message_content = True  # 메시지 내용을 읽지 않으므로 불필요
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -134,7 +134,18 @@ async def main():
         await load_cogs()
         token = os.getenv('DISCORD_BOT_TOKEN')
         if not token:
+            print("❌ 오류: DISCORD_BOT_TOKEN 환경 변수가 설정되지 않았습니다.")
+            print("Railway Variables에서 DISCORD_BOT_TOKEN을 설정해주세요.")
             raise ValueError("DISCORD_BOT_TOKEN 환경 변수가 설정되지 않았습니다.")
+        
+        admin_channel = os.getenv('ADMIN_CHANNEL_ID')
+        if not admin_channel or admin_channel == 'your_channel_id_here':
+            print("⚠️  경고: ADMIN_CHANNEL_ID가 설정되지 않았습니다.")
+            print("관리자 승인 기능이 작동하지 않을 수 있습니다.")
+        
+        print(f"🔑 토큰 확인: {'✅' if token else '❌'}")
+        print(f" channel ID: {'✅' if admin_channel and admin_channel != 'your_channel_id_here' else '❌'}")
+        
         await bot.start(token)
 
 if __name__ == '__main__':

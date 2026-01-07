@@ -1,0 +1,98 @@
+# Railway 배포 가이드
+
+## 1. Discord Developer Portal 설정
+
+### Privileged Intents 활성화
+
+1. [Discord Developer Portal](https://discord.com/developers/applications) 접속
+2. 봇 애플리케이션 선택
+3. 왼쪽 메뉴에서 **"Bot"** 클릭
+4. **"Privileged Gateway Intents"** 섹션에서 다음을 활성화:
+   - ✅ **SERVER MEMBERS INTENT** (필수) - 멤버 목록 접근용
+   - ❌ **MESSAGE CONTENT INTENT** (불필요) - 메시지 내용 읽기용 (현재 봇에서는 사용 안 함)
+   - ❌ **PRESENCE INTENT** (불필요) - 사용자 상태 확인용
+
+5. **"Save Changes"** 클릭
+
+## 2. Railway 환경 변수 설정
+
+Railway 대시보드에서 다음 환경 변수를 설정하세요:
+
+### 필수 환경 변수
+
+1. **DISCORD_BOT_TOKEN**
+   - 값: Discord Developer Portal에서 발급받은 봇 토큰을 입력하세요
+
+2. **ADMIN_CHANNEL_ID**
+   - 값: 관리자 승인 채널의 ID (예: `123456789012345678`)
+
+### Railway에서 환경 변수 설정 방법
+
+1. Railway 프로젝트 대시보드 접속
+2. 서비스 선택
+3. **"Variables"** 탭 클릭
+4. **"New Variable"** 클릭
+5. 변수 이름과 값 입력:
+   - Name: `DISCORD_BOT_TOKEN`
+   - Value: Discord Developer Portal에서 발급받은 봇 토큰
+6. **"Add"** 클릭
+7. `ADMIN_CHANNEL_ID`도 동일하게 추가
+
+### Discord 채널 ID 확인 방법
+
+1. Discord에서 개발자 모드 활성화:
+   - 사용자 설정 → 고급 → 개발자 모드 활성화
+2. 관리자 승인 채널에서 우클릭
+3. **"ID 복사"** 선택
+4. 복사한 ID를 `ADMIN_CHANNEL_ID`에 입력
+
+## 3. Railway 배포 확인
+
+### 배포 후 확인사항
+
+1. Railway 로그에서 다음 메시지 확인:
+   ```
+   ✅ cogs.quests 로드 완료
+   ✅ cogs.profile 로드 완료
+   [봇 이름]가 로그인했습니다!
+   ```
+
+2. Discord에서 봇 상태 확인:
+   - 봇이 온라인 상태여야 합니다
+   - `/sz` 명령어가 작동해야 합니다
+
+### 문제 해결
+
+#### 봇이 오프라인인 경우
+
+1. **Privileged Intents 확인**
+   - Discord Developer Portal에서 SERVER MEMBERS INTENT가 활성화되어 있는지 확인
+
+2. **환경 변수 확인**
+   - Railway Variables 탭에서 `DISCORD_BOT_TOKEN`이 올바르게 설정되었는지 확인
+   - 토큰에 공백이나 따옴표가 없는지 확인
+
+3. **로그 확인**
+   - Railway 로그에서 오류 메시지 확인
+   - "privileged intents" 오류가 있으면 위의 1번 단계 확인
+
+#### 명령어가 보이지 않는 경우
+
+1. 봇이 온라인 상태인지 확인
+2. 몇 분 기다린 후 다시 시도 (슬래시 명령어 동기화에 시간이 걸릴 수 있음)
+3. Discord 서버에서 봇을 다시 초대 (필요한 경우)
+
+## 4. 봇 재시작
+
+환경 변수를 변경한 경우:
+
+1. Railway 대시보드에서 서비스 선택
+2. **"Deployments"** 탭 클릭
+3. 최신 배포 옆의 **"..."** 메뉴 클릭
+4. **"Redeploy"** 선택
+
+또는
+
+1. **"Settings"** 탭 클릭
+2. **"Restart"** 버튼 클릭
+

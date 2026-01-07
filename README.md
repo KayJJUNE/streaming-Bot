@@ -33,7 +33,10 @@ ADMIN_CHANNEL_ID=your_channel_id_here
 
 1. [Discord Developer Portal](https://discord.com/developers/applications)에서 봇 생성
 2. 봇 토큰을 `.env` 파일에 입력
-3. 봇에 다음 권한 부여:
+3. **중요: Privileged Intents 활성화**
+   - Bot 메뉴에서 **"SERVER MEMBERS INTENT"** 활성화 (필수)
+   - 이 설정이 없으면 봇이 오프라인 상태가 됩니다
+4. 봇에 다음 권한 부여:
    - Manage Roles
    - Send Messages
    - Embed Links
