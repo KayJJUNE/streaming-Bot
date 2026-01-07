@@ -85,6 +85,18 @@ class Database:
                 )
             ''')
             
+            # XP 로그 테이블
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS xp_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    mission_name VARCHAR(255) NOT NULL,
+                    xp_amount INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            ''')
+            
             # 인덱스 생성
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_submissions_user 
@@ -97,6 +109,14 @@ class Database:
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_completed_quests_user 
                 ON completed_quests(user_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_xp_logs_user 
+                ON xp_logs(user_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_xp_logs_created_at 
+                ON xp_logs(created_at DESC)
             ''')
             
             conn.commit()
@@ -239,12 +259,20 @@ class Database:
             
             # XP 추가 및 사용자 테이블 업데이트
             xp_earned = quest_info['xp']
+            mission_name = f"Mission {mission_code}: {quest_info['name']}"
+            
             cursor.execute('''
                 UPDATE users
                 SET total_xp = total_xp + %s,
                     approved_count = approved_count + 1
                 WHERE user_id = %s
             ''', (xp_earned, user_id))
+            
+            # XP 로그 기록
+            cursor.execute('''
+                INSERT INTO xp_logs (user_id, mission_name, xp_amount)
+                VALUES (%s, %s, %s)
+            ''', (user_id, mission_name, xp_earned))
             
             # 완료된 퀘스트 기록 (원타임만 기록)
             if quest_info['type'] == 'one-time':
@@ -328,11 +356,19 @@ class Database:
         
         # XP 추가
         xp_earned = quest_info['xp']
+        mission_name = f"Mission {mission_code}: {quest_info['name']} (Milestone)"
+        
         cursor.execute('''
             UPDATE users
             SET total_xp = total_xp + %s
             WHERE user_id = %s
         ''', (xp_earned, user_id))
+        
+        # XP 로그 기록
+        cursor.execute('''
+            INSERT INTO xp_logs (user_id, mission_name, xp_amount)
+            VALUES (%s, %s, %s)
+        ''', (user_id, mission_name, xp_earned))
         
         # 완료 기록
         cursor.execute('''

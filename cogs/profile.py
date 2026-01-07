@@ -86,6 +86,43 @@ class ProfileCog(commands.Cog):
         embed.set_footer(text="더 많은 XP를 획득하여 상위권에 도전하세요!")
         
         await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="log", description="XP 획득 이력 확인")
+    async def log(self, interaction: discord.Interaction):
+        """XP 획득 이력 표시"""
+        user = self.db.get_or_create_user(interaction.user.id)
+        xp_logs = self.db.get_xp_logs(interaction.user.id, limit=15)
+        
+        embed = discord.Embed(
+            title="📜 XP History Log",
+            description="Here are your recent activities.",
+            color=discord.Color.blue()
+        )
+        
+        if not xp_logs:
+            embed.description = "No records found. Complete quests to start earning XP!"
+        else:
+            log_text = ""
+            for log_entry in xp_logs:
+                # 타임스탬프 포맷팅
+                created_at = log_entry['created_at']
+                if isinstance(created_at, str):
+                    from datetime import datetime
+                    created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                
+                formatted_time = created_at.strftime('%Y/%m/%d %H:%M')
+                mission_name = log_entry['mission_name']
+                xp_amount = log_entry['xp_amount']
+                
+                log_text += f"`[{formatted_time}]` **{mission_name}** (`+{xp_amount} XP`)\n"
+            
+            embed.description = log_text
+        
+        # Footer에 총 XP 표시
+        total_xp = user['total_xp']
+        embed.set_footer(text=f"Total XP: {total_xp:,}")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
