@@ -19,8 +19,8 @@ class QuestsCog(commands.Cog):
         rejected_submissions = self.db.get_rejected_submissions(interaction.user.id)
         
         embed = discord.Embed(
-            title="🎮 Spot Zero 퀘스트 보드",
-            description="아래 퀘스트를 완료하여 XP를 획득하고 티어를 올리세요!",
+            title="🎮 Spot Zero Quest Board",
+            description="Complete quests below to earn XP and level up your tier!",
             color=discord.Color.gold()
         )
         
@@ -28,19 +28,26 @@ class QuestsCog(commands.Cog):
         direct_quests = []
         for code, info in QUEST_INFO.items():
             if info['type'] in ['one-time', 'repeatable']:
-                status = "✅ 완료" if self.db.is_quest_completed(interaction.user.id, code) else "⏳ 미완료"
+                status = "✅ Completed" if self.db.is_quest_completed(interaction.user.id, code) else "⏳ Not Completed"
                 if info['type'] == 'repeatable':
                     count = self.db.get_approved_count(interaction.user.id, code)
-                    status = f"✅ {count}회 완료 (반복 가능)"
+                    status = f"✅ {count} times completed (Repeatable)"
                 
                 direct_quests.append(
                     f"**{code}: {info['name']}** - {info['xp']} XP\n"
-                    f"상태: {status}"
+                    f"Status: {status}"
                 )
         
+        # 직접 제출 퀘스트 설명 추가
+        direct_quests_text = "**Submit quests manually by selecting from the dropdown below.**\n"
+        direct_quests_text += "• **One-time quests** can only be completed once\n"
+        direct_quests_text += "• **Repeatable quests** can be submitted multiple times\n\n"
+        direct_quests_text += "---\n\n"
+        direct_quests_text += "\n\n".join(direct_quests) if direct_quests else "No quests available"
+        
         embed.add_field(
-            name="📝 직접 제출 퀘스트",
-            value="\n\n".join(direct_quests) if direct_quests else "없음",
+            name="📝 Direct Submission Quests",
+            value=direct_quests_text,
             inline=False
         )
         
@@ -49,7 +56,7 @@ class QuestsCog(commands.Cog):
         for code, info in QUEST_INFO.items():
             if info['type'] == 'milestone':
                 is_completed = self.db.is_quest_completed(interaction.user.id, code)
-                status = "✅ 완료" if is_completed else "⏳ 진행 중"
+                status = "✅ Completed" if is_completed else "⏳ In Progress"
                 
                 # 진행도 표시
                 if code == 'D':
@@ -69,12 +76,19 @@ class QuestsCog(commands.Cog):
                 
                 milestone_quests.append(
                     f"**{code}: {info['name']}** - {info['xp']} XP {progress}\n"
-                    f"상태: {status}"
+                    f"Status: {status}"
                 )
         
+        # 마일스톤 퀘스트 설명 추가
+        milestone_quests_text = "**These quests are automatically completed when you reach certain milestones.**\n"
+        milestone_quests_text += "• Progress is tracked automatically based on your approved submissions\n"
+        milestone_quests_text += "• Rewards are granted instantly when milestones are reached\n\n"
+        milestone_quests_text += "---\n\n"
+        milestone_quests_text += "\n\n".join(milestone_quests) if milestone_quests else "No milestone quests available"
+        
         embed.add_field(
-            name="🎯 마일스톤 퀘스트 (자동 완료)",
-            value="\n\n".join(milestone_quests) if milestone_quests else "없음",
+            name="🎯 Milestone Quests (Auto-complete)",
+            value=milestone_quests_text,
             inline=False
         )
         
@@ -91,10 +105,10 @@ class QuestsCog(commands.Cog):
         
         tier_text = f"**{tier_info['name']}** (Lv.{current_tier})"
         if next_tier:
-            tier_text += f"\n다음 티어: {next_tier[1]['name']} (Lv.{next_tier[0]}) - {next_tier[1]['xp_required'] - total_xp} XP 필요"
+            tier_text += f"\n**Next Tier:** {next_tier[1]['name']} (Lv.{next_tier[0]}) - {next_tier[1]['xp_required'] - total_xp:,} XP needed"
         
         embed.add_field(
-            name="🏆 현재 티어",
+            name="🏆 Current Tier",
             value=tier_text,
             inline=False
         )
@@ -104,16 +118,16 @@ class QuestsCog(commands.Cog):
             rejected_text = ""
             for sub in rejected_submissions[:5]:  # 최근 5개만 표시
                 quest_name = QUEST_INFO.get(sub['mission_code'], {}).get('name', sub['mission_code'])
-                reason = sub.get('rejection_reason', '사유 없음')
+                reason = sub.get('rejection_reason', 'No reason provided')
                 rejected_text += f"**{quest_name}** ({sub['mission_code']}): {reason}\n"
             
             embed.add_field(
-                name="❌ 반려된 제출",
-                value=rejected_text if rejected_text else "없음",
+                name="❌ Rejected Submissions",
+                value=rejected_text if rejected_text else "None",
                 inline=False
             )
         
-        embed.set_footer(text=f"총 XP: {total_xp}")
+        embed.set_footer(text=f"Total XP: {total_xp:,}")
         
         # 드롭다운 메뉴가 포함된 View 추가
         view = QuestSelectView(interaction.user.id, self.db, self.bot)
