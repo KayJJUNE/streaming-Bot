@@ -2,17 +2,25 @@
 
 ## 1. Discord Developer Portal 설정
 
-### Privileged Intents 활성화
+### 봇 초대 설정
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) 접속
 2. 봇 애플리케이션 선택
 3. 왼쪽 메뉴에서 **"Bot"** 클릭
-4. **"Privileged Gateway Intents"** 섹션에서 다음을 활성화:
+4. **"Authorization Flow"** 섹션에서:
+   - ✅ **Public Bot**: 활성화 (누구나 봇을 추가할 수 있음)
+   - ❌ **Requires OAuth2 Code Grant**: **비활성화** (일반 초대 링크 사용)
+     - 이 옵션이 활성화되어 있으면 "Integration requires code grant" 오류가 발생합니다
+     - 대부분의 봇은 이 옵션을 비활성화해도 정상 작동합니다
+
+### Privileged Intents 활성화
+
+5. **"Privileged Gateway Intents"** 섹션에서 다음을 활성화:
    - ✅ **SERVER MEMBERS INTENT** (필수) - 멤버 목록 접근용
    - ❌ **MESSAGE CONTENT INTENT** (불필요) - 메시지 내용 읽기용 (현재 봇에서는 사용 안 함)
    - ❌ **PRESENCE INTENT** (불필요) - 사용자 상태 확인용
 
-5. **"Save Changes"** 클릭
+6. **"Save Changes"** 클릭
 
 ## 2. Railway 환경 변수 설정
 

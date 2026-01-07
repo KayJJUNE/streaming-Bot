@@ -115,87 +115,80 @@ class QuestsCog(commands.Cog):
         
         embed.set_footer(text=f"총 XP: {total_xp}")
         
-        # 제출 버튼 추가
-        view = QuestSubmissionView(self.db, self.bot)
+        # 드롭다운 메뉴가 포함된 View 추가
+        view = QuestSelectView(interaction.user.id, self.db, self.bot)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-class QuestSubmissionView(View):
-    def __init__(self, db: Database, bot: commands.Bot):
-        super().__init__(timeout=None)
+class QuestSelectView(View):
+    """퀘스트 선택 드롭다운 메뉴가 포함된 View"""
+    def __init__(self, user_id: int, db: Database, bot: commands.Bot):
+        super().__init__(timeout=300)  # 5분 타임아웃
+        self.user_id = user_id
         self.db = db
         self.bot = bot
-    
-    @discord.ui.button(label="퀘스트 제출", style=discord.ButtonStyle.primary, custom_id="submit_quest")
-    async def submit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """퀘스트 제출 모달 열기"""
+        
         # 제출 가능한 퀘스트 목록 생성
         available_quests = []
         for code, info in QUEST_INFO.items():
             if info['type'] in ['one-time', 'repeatable']:
                 # 원타임 퀘스트는 완료하지 않은 것만
                 if info['type'] == 'one-time':
-                    if not self.db.is_quest_completed(interaction.user.id, code):
+                    if not self.db.is_quest_completed(user_id, code):
                         available_quests.append((code, info))
                 else:
                     # 반복 가능한 퀘스트는 항상 제출 가능
                     available_quests.append((code, info))
         
-        if not available_quests:
-            await interaction.response.send_message(
-                "❌ 제출 가능한 퀘스트가 없습니다.",
-                ephemeral=True
+        # 드롭다운 메뉴 생성
+        if available_quests:
+            select_options = []
+            for code, info in available_quests:
+                # 드롭다운 옵션 레이블 생성
+                if code == 'A':
+                    label = "Mission A: Promo Video"
+                elif code == 'B':
+                    label = "Mission B: Upload Video"
+                elif code == 'C':
+                    label = "Mission C: Live Stream"
+                elif code == 'H':
+                    label = "Mission H: High Engagement"
+                else:
+                    label = f"{code}: {info['name']}"
+                
+                select_options.append(
+                    discord.SelectOption(
+                        label=label,
+                        value=code,
+                        description=f"{info['xp']} XP - {info['type']}"
+                    )
+                )
+            
+            self.quest_select = QuestSelect(
+                placeholder="제출할 퀘스트를 선택하세요",
+                options=select_options,
+                db=self.db,
+                bot=self.bot
             )
-            return
-        
-        # 모달 표시
-        modal = QuestSubmissionModal(available_quests, self.db, self.bot)
-        await interaction.response.send_modal(modal)
+            self.add_item(self.quest_select)
+    
+    async def on_timeout(self):
+        """View 타임아웃 시 처리"""
+        # 타임아웃 시 아무 작업도 하지 않음 (뷰가 비활성화됨)
+        pass
 
 
-class QuestSubmissionModal(Modal, title="퀘스트 제출"):
-    def __init__(self, available_quests, db: Database, bot: commands.Bot):
-        super().__init__()
+class QuestSelect(Select):
+    """퀘스트 선택 드롭다운"""
+    def __init__(self, placeholder: str, options: list, db: Database, bot: commands.Bot):
+        super().__init__(placeholder=placeholder, options=options, min_values=1, max_values=1)
         self.db = db
         self.bot = bot
-        
-        # 퀘스트 선택 드롭다운
-        self.quest_select = Select(
-            placeholder="제출할 퀘스트를 선택하세요",
-            options=[
-                discord.SelectOption(
-                    label=f"{code}: {info['name']} ({info['xp']} XP)",
-                    value=code,
-                    description=f"{info['type']} - {info['xp']} XP"
-                )
-                for code, info in available_quests
-            ]
-        )
-        self.add_item(self.quest_select)
-        
-        # 링크 입력 필드
-        self.link_input = discord.ui.TextInput(
-            label="링크/증거",
-            placeholder="제출할 링크 또는 증거를 입력하세요",
-            required=True,
-            max_length=1000
-        )
-        self.add_item(self.link_input)
     
-    async def on_submit(self, interaction: discord.Interaction):
-        """모달 제출 처리"""
-        mission_code = self.quest_select.values[0] if self.quest_select.values else None
-        link = self.link_input.value
-        
-        if not mission_code:
-            await interaction.response.send_message(
-                "❌ 퀘스트를 선택해주세요.",
-                ephemeral=True
-            )
-            return
-        
-        mission_code = mission_code.upper()
-        quest_info = QUEST_INFO.get(mission_code)
+    async def callback(self, interaction: discord.Interaction):
+        """드롭다운에서 퀘스트 선택 시 모달 열기"""
+        selected_code = self.values[0]
+        quest_info = QUEST_INFO.get(selected_code)
         
         if not quest_info:
             await interaction.response.send_message(
@@ -206,9 +199,66 @@ class QuestSubmissionModal(Modal, title="퀘스트 제출"):
         
         # 원타임 퀘스트 중복 체크
         if quest_info['type'] == 'one-time':
-            if self.db.is_quest_completed(interaction.user.id, mission_code):
+            if self.db.is_quest_completed(interaction.user.id, selected_code):
                 await interaction.response.send_message(
                     f"❌ {quest_info['name']}은(는) 이미 완료한 원타임 퀘스트입니다.",
+                    ephemeral=True
+                )
+                return
+        
+        # 모달 열기
+        modal = SubmissionModal(selected_code, quest_info, self.db, self.bot)
+        await interaction.response.send_modal(modal)
+
+
+class SubmissionModal(Modal):
+    """퀘스트 제출 모달"""
+    def __init__(self, mission_code: str, quest_info: dict, db: Database, bot: commands.Bot):
+        # 모달 제목 설정
+        quest_name = quest_info['name']
+        if mission_code == 'A':
+            title = "Submit Mission A"
+        elif mission_code == 'B':
+            title = "Submit Mission B"
+        elif mission_code == 'C':
+            title = "Submit Mission C"
+        elif mission_code == 'H':
+            title = "Submit Mission H"
+        else:
+            title = f"Submit {mission_code}: {quest_name}"
+        
+        super().__init__(title=title)
+        self.mission_code = mission_code
+        self.quest_info = quest_info
+        self.db = db
+        self.bot = bot
+        
+        # 링크 입력 필드
+        self.link_input = discord.ui.TextInput(
+            label="Proof URL / Link",
+            placeholder="제출할 링크 또는 증거를 입력하세요",
+            required=True,
+            max_length=1000,
+            style=discord.TextStyle.short
+        )
+        self.add_item(self.link_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        """모달 제출 처리"""
+        link = self.link_input.value.strip()
+        
+        if not link:
+            await interaction.response.send_message(
+                "❌ 링크를 입력해주세요.",
+                ephemeral=True
+            )
+            return
+        
+        # 원타임 퀘스트 중복 체크 (한 번 더 확인)
+        if self.quest_info['type'] == 'one-time':
+            if self.db.is_quest_completed(interaction.user.id, self.mission_code):
+                await interaction.response.send_message(
+                    f"❌ {self.quest_info['name']}은(는) 이미 완료한 원타임 퀘스트입니다.",
                     ephemeral=True
                 )
                 return
@@ -216,7 +266,7 @@ class QuestSubmissionModal(Modal, title="퀘스트 제출"):
         # 제출 생성
         submission_id = self.db.create_submission(
             interaction.user.id,
-            mission_code,
+            self.mission_code,
             link
         )
         
@@ -231,8 +281,8 @@ class QuestSubmissionModal(Modal, title="퀘스트 제출"):
                     timestamp=discord.utils.utcnow()
                 )
                 embed.add_field(name="사용자", value=f"<@{interaction.user.id}>", inline=True)
-                embed.add_field(name="미션", value=f"{mission_code}: {quest_info['name']}", inline=True)
-                embed.add_field(name="보상", value=f"{quest_info['xp']} XP", inline=True)
+                embed.add_field(name="미션", value=f"{self.mission_code}: {self.quest_info['name']}", inline=True)
+                embed.add_field(name="보상", value=f"{self.quest_info['xp']} XP", inline=True)
                 embed.add_field(name="링크/증거", value=link, inline=False)
                 embed.add_field(name="제출 ID", value=f"#{submission_id}", inline=False)
                 embed.set_footer(text=f"User ID: {interaction.user.id}")
@@ -240,9 +290,9 @@ class QuestSubmissionModal(Modal, title="퀘스트 제출"):
                 view = ApprovalView(submission_id, self.db, self.bot)
                 await admin_channel.send(embed=embed, view=view)
         
+        # 사용자에게 응답
         await interaction.response.send_message(
-            f"✅ **{quest_info['name']}** 제출이 완료되었습니다!\n"
-            f"24시간 내 확인할 수 있습니다.",
+            "✅ **Submission received!** Admins will review it soon.",
             ephemeral=True
         )
 
