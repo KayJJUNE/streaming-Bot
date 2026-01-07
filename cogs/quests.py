@@ -245,36 +245,62 @@ class SubmissionModal(Modal):
     
     async def on_submit(self, interaction: discord.Interaction):
         """모달 제출 처리"""
-        link = self.link_input.value.strip()
-        
-        if not link:
-            await interaction.response.send_message(
-                "❌ 링크를 입력해주세요.",
-                ephemeral=True
-            )
-            return
-        
-        # 원타임 퀘스트 중복 체크 (한 번 더 확인)
-        if self.quest_info['type'] == 'one-time':
-            if self.db.is_quest_completed(interaction.user.id, self.mission_code):
+        try:
+            link = self.link_input.value.strip()
+            
+            if not link:
                 await interaction.response.send_message(
-                    f"❌ {self.quest_info['name']}은(는) 이미 완료한 원타임 퀘스트입니다.",
+                    "❌ 링크를 입력해주세요.",
                     ephemeral=True
                 )
                 return
-        
-        # 제출 생성
-        submission_id = self.db.create_submission(
-            interaction.user.id,
-            self.mission_code,
-            link
-        )
-        
-        # 관리자 승인 채널로 전송
-        admin_channel_id = int(os.getenv('ADMIN_CHANNEL_ID', '0'))
-        if admin_channel_id:
-            admin_channel = self.bot.get_channel(admin_channel_id)
-            if admin_channel:
+            
+            # 원타임 퀘스트 중복 체크 (한 번 더 확인)
+            if self.quest_info['type'] == 'one-time':
+                if self.db.is_quest_completed(interaction.user.id, self.mission_code):
+                    await interaction.response.send_message(
+                        f"❌ {self.quest_info['name']}은(는) 이미 완료한 원타임 퀘스트입니다.",
+                        ephemeral=True
+                    )
+                    return
+            
+            # 제출 생성
+            try:
+                submission_id = self.db.create_submission(
+                    interaction.user.id,
+                    self.mission_code,
+                    link
+                )
+            except Exception as e:
+                print(f"❌ 데이터베이스 오류: {e}")
+                await interaction.response.send_message(
+                    "❌ 제출 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                    ephemeral=True
+                )
+                return
+            
+            # 사용자에게 먼저 응답 (3초 이내 응답 필요)
+            await interaction.response.send_message(
+                "✅ **Submission received!** Admins will review it soon.",
+                ephemeral=True
+            )
+            
+            # 관리자 승인 채널로 전송 (응답 후 비동기로 처리)
+            try:
+                admin_channel_id_str = os.getenv('ADMIN_CHANNEL_ID', '0')
+                if not admin_channel_id_str or admin_channel_id_str == 'your_channel_id_here':
+                    print("⚠️ ADMIN_CHANNEL_ID가 설정되지 않았습니다.")
+                    # 관리자 채널이 없어도 제출은 성공했으므로 사용자에게는 성공 메시지 표시
+                    return
+                
+                admin_channel_id = int(admin_channel_id_str)
+                admin_channel = self.bot.get_channel(admin_channel_id)
+                
+                if not admin_channel:
+                    print(f"⚠️ 관리자 채널을 찾을 수 없습니다. (Channel ID: {admin_channel_id})")
+                    # 채널을 찾지 못해도 제출은 성공했으므로 계속 진행
+                    return
+                
                 embed = discord.Embed(
                     title="새로운 퀘스트 제출",
                     color=discord.Color.blue(),
@@ -289,12 +315,31 @@ class SubmissionModal(Modal):
                 
                 view = ApprovalView(submission_id, self.db, self.bot)
                 await admin_channel.send(embed=embed, view=view)
+                
+            except ValueError:
+                print(f"⚠️ ADMIN_CHANNEL_ID가 유효하지 않은 숫자입니다: {admin_channel_id_str}")
+            except Exception as e:
+                print(f"⚠️ 관리자 채널로 메시지 전송 중 오류: {e}")
+                # 관리자 채널 전송 실패해도 제출은 성공했으므로 사용자에게는 성공 메시지 표시
         
-        # 사용자에게 응답
-        await interaction.response.send_message(
-            "✅ **Submission received!** Admins will review it soon.",
-            ephemeral=True
-        )
+        except Exception as e:
+            print(f"❌ 모달 제출 처리 중 예상치 못한 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 이미 응답을 보냈는지 확인
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.send_message(
+                        "❌ 제출 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                        ephemeral=True
+                    )
+                except:
+                    # 응답 실패 시 followup 사용
+                    await interaction.followup.send(
+                        "❌ 제출 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                        ephemeral=True
+                    )
 
 
 class ApprovalView(discord.ui.View):
