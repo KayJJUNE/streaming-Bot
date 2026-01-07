@@ -1,7 +1,9 @@
-import sqlite3
-import discord
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from typing import Optional, List, Dict, Tuple
 from datetime import datetime
+import json
 
 # 퀘스트 정보 정의
 QUEST_INFO = {
@@ -25,72 +27,86 @@ TIER_SYSTEM = {
 }
 
 class Database:
-    def __init__(self, db_path: str = 'database.db'):
-        self.db_path = db_path
+    def __init__(self):
+        """PostgreSQL 데이터베이스 초기화"""
+        self.connection_string = os.getenv('DATABASE_URL') or os.getenv('DATABASE_PUBLIC_URL')
+        if not self.connection_string:
+            raise ValueError("DATABASE_URL 또는 DATABASE_PUBLIC_URL 환경 변수가 설정되지 않았습니다.")
         self.init_database()
     
     def get_connection(self):
         """데이터베이스 연결 반환"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
+        conn = psycopg2.connect(self.connection_string)
         return conn
     
     def init_database(self):
-        """데이터베이스 초기화"""
+        """데이터베이스 초기화 및 테이블 생성"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # 사용자 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                total_xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1,
-                registered_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # 제출 기록 테이블
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS submissions (
-                submission_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                mission_code TEXT NOT NULL,
-                link TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                approved_at TEXT,
-                rejection_reason TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
-            )
-        ''')
-        
-        # 반려 사유 컬럼 추가 (기존 테이블에 컬럼이 없는 경우)
         try:
-            cursor.execute('ALTER TABLE submissions ADD COLUMN rejection_reason TEXT')
-        except sqlite3.OperationalError:
-            pass  # 컬럼이 이미 존재하는 경우
-        
-        # 완료된 퀘스트 기록 테이블 (마일스톤 포함)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS completed_quests (
-                completion_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                mission_code TEXT NOT NULL,
-                xp_earned INTEGER NOT NULL,
-                completed_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (user_id),
-                UNIQUE(user_id, mission_code)
-            )
-        ''')
-        
-        # 인덱스 생성
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_submissions_user ON submissions(user_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_completed_quests_user ON completed_quests(user_id)')
-        
-        conn.commit()
-        conn.close()
+            # 사용자 테이블 (새로운 구조)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    total_submissions INTEGER DEFAULT 0,
+                    approved_count INTEGER DEFAULT 0,
+                    total_xp INTEGER DEFAULT 0,
+                    link_list TEXT[] DEFAULT '{}',
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 제출 기록 테이블 (상세 기록용)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS submissions (
+                    submission_id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    mission_code VARCHAR(10) NOT NULL,
+                    link TEXT NOT NULL,
+                    status VARCHAR(20) DEFAULT 'pending',
+                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    approved_at TIMESTAMP,
+                    rejection_reason TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # 완료된 퀘스트 기록 테이블 (마일스톤 포함)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS completed_quests (
+                    completion_id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    mission_code VARCHAR(10) NOT NULL,
+                    xp_earned INTEGER NOT NULL,
+                    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+                    UNIQUE(user_id, mission_code)
+                )
+            ''')
+            
+            # 인덱스 생성
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_submissions_user 
+                ON submissions(user_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_submissions_status 
+                ON submissions(status)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_completed_quests_user 
+                ON completed_quests(user_id)
+            ''')
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ 데이터베이스 초기화 오류: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
     
     def register_user(self, user_id: int) -> bool:
         """사용자 등록 (처음 사용 시)"""
@@ -98,24 +114,35 @@ class Database:
         cursor = conn.cursor()
         
         try:
-            cursor.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
+            cursor.execute('''
+                INSERT INTO users (user_id) 
+                VALUES (%s)
+                ON CONFLICT (user_id) DO NOTHING
+            ''', (user_id,))
             conn.commit()
             return cursor.rowcount > 0
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ 사용자 등록 오류: {e}")
+            return False
         finally:
+            cursor.close()
             conn.close()
     
     def get_user(self, user_id: int) -> Optional[Dict]:
         """사용자 정보 조회"""
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return dict(row)
-        return None
+        try:
+            cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_or_create_user(self, user_id: int) -> Dict:
         """사용자 정보 조회 또는 생성"""
@@ -130,29 +157,48 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT INTO submissions (user_id, mission_code, link, status)
-            VALUES (?, ?, ?, 'pending')
-        ''', (user_id, mission_code, link))
-        
-        submission_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        
-        return submission_id
+        try:
+            # 제출 기록 추가
+            cursor.execute('''
+                INSERT INTO submissions (user_id, mission_code, link, status)
+                VALUES (%s, %s, %s, 'pending')
+                RETURNING submission_id
+            ''', (user_id, mission_code, link))
+            
+            submission_id = cursor.fetchone()[0]
+            
+            # 사용자 테이블 업데이트 (total_submissions, link_list)
+            cursor.execute('''
+                UPDATE users
+                SET total_submissions = total_submissions + 1,
+                    link_list = array_append(link_list, %s)
+                WHERE user_id = %s
+            ''', (link, user_id))
+            
+            conn.commit()
+            return submission_id
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ 제출 생성 오류: {e}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_submission(self, submission_id: int) -> Optional[Dict]:
         """제출 정보 조회"""
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        cursor.execute('SELECT * FROM submissions WHERE submission_id = ?', (submission_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return dict(row)
-        return None
+        try:
+            cursor.execute('SELECT * FROM submissions WHERE submission_id = %s', (submission_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        finally:
+            cursor.close()
+            conn.close()
     
     def approve_submission(self, submission_id: int) -> Tuple[bool, Optional[str], List[Dict]]:
         """제출 승인 및 XP 추가"""
@@ -179,7 +225,7 @@ class Database:
             if quest_info['type'] == 'one-time':
                 cursor.execute('''
                     SELECT COUNT(*) FROM completed_quests
-                    WHERE user_id = ? AND mission_code = ?
+                    WHERE user_id = %s AND mission_code = %s
                 ''', (user_id, mission_code))
                 if cursor.fetchone()[0] > 0:
                     return False, "이미 완료한 원타임 퀘스트입니다.", []
@@ -188,22 +234,24 @@ class Database:
             cursor.execute('''
                 UPDATE submissions
                 SET status = 'approved', approved_at = CURRENT_TIMESTAMP
-                WHERE submission_id = ?
+                WHERE submission_id = %s
             ''', (submission_id,))
             
-            # XP 추가
+            # XP 추가 및 사용자 테이블 업데이트
             xp_earned = quest_info['xp']
             cursor.execute('''
                 UPDATE users
-                SET total_xp = total_xp + ?
-                WHERE user_id = ?
+                SET total_xp = total_xp + %s,
+                    approved_count = approved_count + 1
+                WHERE user_id = %s
             ''', (xp_earned, user_id))
             
-            # 완료된 퀘스트 기록 (원타임만 기록, 반복 가능은 기록하지 않음)
+            # 완료된 퀘스트 기록 (원타임만 기록)
             if quest_info['type'] == 'one-time':
                 cursor.execute('''
-                    INSERT OR IGNORE INTO completed_quests (user_id, mission_code, xp_earned)
-                    VALUES (?, ?, ?)
+                    INSERT INTO completed_quests (user_id, mission_code, xp_earned)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id, mission_code) DO NOTHING
                 ''', (user_id, mission_code, xp_earned))
             
             conn.commit()
@@ -212,14 +260,15 @@ class Database:
             milestone_rewards = self._check_milestones(user_id, mission_code, cursor)
             
             conn.commit()
-            conn.close()
-            
             return True, f"{xp_earned} XP를 획득했습니다.", milestone_rewards
             
         except Exception as e:
             conn.rollback()
-            conn.close()
+            print(f"❌ 승인 처리 오류: {e}")
             return False, f"오류 발생: {str(e)}", []
+        finally:
+            cursor.close()
+            conn.close()
     
     def _check_milestones(self, user_id: int, approved_mission: str, cursor) -> List[Dict]:
         """누적 마일스톤 체크 및 보상 지급"""
@@ -229,7 +278,7 @@ class Database:
         if approved_mission == 'B':
             cursor.execute('''
                 SELECT COUNT(*) FROM submissions
-                WHERE user_id = ? AND mission_code = 'B' AND status = 'approved'
+                WHERE user_id = %s AND mission_code = 'B' AND status = 'approved'
             ''', (user_id,))
             video_count = cursor.fetchone()[0]
             
@@ -247,7 +296,7 @@ class Database:
         elif approved_mission == 'C':
             cursor.execute('''
                 SELECT COUNT(*) FROM submissions
-                WHERE user_id = ? AND mission_code = 'C' AND status = 'approved'
+                WHERE user_id = %s AND mission_code = 'C' AND status = 'approved'
             ''', (user_id,))
             stream_count = cursor.fetchone()[0]
             
@@ -272,7 +321,7 @@ class Database:
         # 이미 완료했는지 체크
         cursor.execute('''
             SELECT COUNT(*) FROM completed_quests
-            WHERE user_id = ? AND mission_code = ?
+            WHERE user_id = %s AND mission_code = %s
         ''', (user_id, mission_code))
         if cursor.fetchone()[0] > 0:
             return False
@@ -281,14 +330,15 @@ class Database:
         xp_earned = quest_info['xp']
         cursor.execute('''
             UPDATE users
-            SET total_xp = total_xp + ?
-            WHERE user_id = ?
+            SET total_xp = total_xp + %s
+            WHERE user_id = %s
         ''', (xp_earned, user_id))
         
         # 완료 기록
         cursor.execute('''
             INSERT INTO completed_quests (user_id, mission_code, xp_earned)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, mission_code) DO NOTHING
         ''', (user_id, mission_code, xp_earned))
         
         return True
@@ -298,102 +348,118 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            UPDATE submissions
-            SET status = 'rejected', rejection_reason = ?
-            WHERE submission_id = ?
-        ''', (reason, submission_id))
-        
-        conn.commit()
-        conn.close()
-        
-        return True
+        try:
+            cursor.execute('''
+                UPDATE submissions
+                SET status = 'rejected', rejection_reason = %s
+                WHERE submission_id = %s
+            ''', (reason, submission_id))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ 거부 처리 오류: {e}")
+            return False
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_rejected_submissions(self, user_id: int) -> List[Dict]:
         """사용자의 반려된 제출 목록 조회"""
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        cursor.execute('''
-            SELECT * FROM submissions
-            WHERE user_id = ? AND status = 'rejected'
-            ORDER BY submitted_at DESC
-        ''', (user_id,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [dict(row) for row in rows]
+        try:
+            cursor.execute('''
+                SELECT * FROM submissions
+                WHERE user_id = %s AND status = 'rejected'
+                ORDER BY submitted_at DESC
+            ''', (user_id,))
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_user_submissions(self, user_id: int, status: Optional[str] = None) -> List[Dict]:
         """사용자의 제출 목록 조회"""
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        if status:
-            cursor.execute('''
-                SELECT * FROM submissions
-                WHERE user_id = ? AND status = ?
-                ORDER BY submitted_at DESC
-            ''', (user_id, status))
-        else:
-            cursor.execute('''
-                SELECT * FROM submissions
-                WHERE user_id = ?
-                ORDER BY submitted_at DESC
-            ''', (user_id,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [dict(row) for row in rows]
+        try:
+            if status:
+                cursor.execute('''
+                    SELECT * FROM submissions
+                    WHERE user_id = %s AND status = %s
+                    ORDER BY submitted_at DESC
+                ''', (user_id, status))
+            else:
+                cursor.execute('''
+                    SELECT * FROM submissions
+                    WHERE user_id = %s
+                    ORDER BY submitted_at DESC
+                ''', (user_id,))
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_approved_count(self, user_id: int, mission_code: str) -> int:
         """승인된 특정 미션 개수"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT COUNT(*) FROM submissions
-            WHERE user_id = ? AND mission_code = ? AND status = 'approved'
-        ''', (user_id, mission_code))
-        
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return count
+        try:
+            cursor.execute('''
+                SELECT COUNT(*) FROM submissions
+                WHERE user_id = %s AND mission_code = %s AND status = 'approved'
+            ''', (user_id, mission_code))
+            
+            count = cursor.fetchone()[0]
+            return count
+        finally:
+            cursor.close()
+            conn.close()
     
     def is_quest_completed(self, user_id: int, mission_code: str) -> bool:
         """원타임 퀘스트 완료 여부"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT COUNT(*) FROM completed_quests
-            WHERE user_id = ? AND mission_code = ?
-        ''', (user_id, mission_code))
-        
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return count > 0
+        try:
+            cursor.execute('''
+                SELECT COUNT(*) FROM completed_quests
+                WHERE user_id = %s AND mission_code = %s
+            ''', (user_id, mission_code))
+            
+            count = cursor.fetchone()[0]
+            return count > 0
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_leaderboard(self, limit: int = 10) -> List[Dict]:
         """리더보드 조회"""
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        cursor.execute('''
-            SELECT user_id, total_xp, level
-            FROM users
-            ORDER BY total_xp DESC
-            LIMIT ?
-        ''', (limit,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [dict(row) for row in rows]
+        try:
+            cursor.execute('''
+                SELECT user_id, total_xp, approved_count, total_submissions
+                FROM users
+                ORDER BY total_xp DESC
+                LIMIT %s
+            ''', (limit,))
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            cursor.close()
+            conn.close()
     
     def get_user_tier(self, total_xp: int) -> int:
         """XP에 따른 티어 계산"""
@@ -407,16 +473,17 @@ class Database:
     def get_pending_submissions(self) -> List[Dict]:
         """대기 중인 제출 목록"""
         conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        cursor.execute('''
-            SELECT * FROM submissions
-            WHERE status = 'pending'
-            ORDER BY submitted_at ASC
-        ''')
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [dict(row) for row in rows]
-
+        try:
+            cursor.execute('''
+                SELECT * FROM submissions
+                WHERE status = 'pending'
+                ORDER BY submitted_at ASC
+            ''')
+            
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            cursor.close()
+            conn.close()

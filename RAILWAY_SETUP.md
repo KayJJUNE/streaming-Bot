@@ -35,6 +35,12 @@ Railway 대시보드에서 다음 환경 변수를 설정하세요:
    - 값: `1417465862910246922` (관리자 승인 채널 ID)
    - 채널 링크: https://discord.com/channels/1371432049621078046/1417465862910246922
 
+3. **DATABASE_URL** (PostgreSQL)
+   - Railway에서 PostgreSQL 서비스를 추가하면 자동으로 설정됩니다
+   - 또는 수동으로 설정:
+     - `postgresql://postgres:FpTkzkYnfRCwbbxGlkriLBEUkCDAFAsd@switchyard.proxy.rlwy.net:11525/railway`
+   - **참고:** Railway에서 PostgreSQL 서비스를 추가하면 `DATABASE_URL` 환경 변수가 자동으로 생성됩니다
+
 ### Railway에서 환경 변수 설정 방법
 
 1. Railway 프로젝트 대시보드 접속
