@@ -301,19 +301,46 @@ class SubmissionModal(Modal):
                     # 채널을 찾지 못해도 제출은 성공했으므로 계속 진행
                     return
                 
+                # Ticket 스타일 임베드 생성
                 embed = discord.Embed(
-                    title="새로운 퀘스트 제출",
-                    color=discord.Color.blue(),
+                    title="🚨 New Quest Submission",
+                    color=discord.Color.orange(),  # Orange (Pending state)
                     timestamp=discord.utils.utcnow()
                 )
-                embed.add_field(name="사용자", value=f"<@{interaction.user.id}>", inline=True)
-                embed.add_field(name="미션", value=f"{self.mission_code}: {self.quest_info['name']}", inline=True)
-                embed.add_field(name="보상", value=f"{self.quest_info['xp']} XP", inline=True)
-                embed.add_field(name="링크/증거", value=link, inline=False)
-                embed.add_field(name="제출 ID", value=f"#{submission_id}", inline=False)
-                embed.set_footer(text=f"User ID: {interaction.user.id}")
                 
-                view = ApprovalView(submission_id, self.db, self.bot)
+                # 사용자 정보 (클릭 가능한 멘션)
+                user_mention = f"<@{interaction.user.id}>"
+                embed.add_field(
+                    name="👤 User",
+                    value=f"{user_mention}\nID: `{interaction.user.id}`",
+                    inline=True
+                )
+                
+                # 미션 정보
+                mission_label = f"Mission {self.mission_code}"
+                embed.add_field(
+                    name="🎯 Mission",
+                    value=f"**{mission_label}**\n{self.quest_info['name']}\n**Reward:** {self.quest_info['xp']} XP",
+                    inline=True
+                )
+                
+                # 증거 링크 (강조)
+                embed.add_field(
+                    name="🔗 Proof",
+                    value=f"[Click here]({link})\n`{link}`",
+                    inline=False
+                )
+                
+                # 제출 ID
+                embed.add_field(
+                    name="📋 Submission ID",
+                    value=f"`#{submission_id}`",
+                    inline=True
+                )
+                
+                embed.set_footer(text="Pending Review • Click a button below to process")
+                
+                view = AdminApprovalView(submission_id, self.db, self.bot)
                 await admin_channel.send(embed=embed, view=view)
                 
             except ValueError:
@@ -342,78 +369,171 @@ class SubmissionModal(Modal):
                     )
 
 
-class ApprovalView(discord.ui.View):
+class AdminApprovalView(discord.ui.View):
+    """관리자 승인/거부 버튼이 있는 View (Persistent)"""
     def __init__(self, submission_id: int, db: Database, bot: commands.Bot):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # Persistent View
         self.submission_id = submission_id
         self.db = db
         self.bot = bot
     
-    @discord.ui.button(label="✅ 승인", style=discord.ButtonStyle.green, custom_id="approve_btn")
+    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.green, custom_id="approve_btn")
     async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """승인 버튼 처리"""
         # 관리자 권한 체크
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 승인할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ 관리자만 승인할 수 있습니다.",
+                ephemeral=True
+            )
             return
         
-        success, message, milestone_rewards = self.db.approve_submission(self.submission_id)
+        # 응답 지연 (데이터베이스 작업 시간 확보)
+        await interaction.response.defer()
         
-        if success:
+        try:
+            # 데이터베이스에서 승인 처리
+            success, message, milestone_rewards = self.db.approve_submission(self.submission_id)
+            
+            if not success:
+                await interaction.followup.send(
+                    f"❌ 승인 처리 실패: {message}",
+                    ephemeral=True
+                )
+                return
+            
+            # 제출 정보 조회
             submission = self.db.get_submission(self.submission_id)
+            if not submission:
+                await interaction.followup.send(
+                    "❌ 제출 정보를 찾을 수 없습니다.",
+                    ephemeral=True
+                )
+                return
+            
             user_id = submission['user_id']
             mission_code = submission['mission_code']
-            quest_info = QUEST_INFO[mission_code]
+            quest_info = QUEST_INFO.get(mission_code)
+            
+            if not quest_info:
+                await interaction.followup.send(
+                    "❌ 유효하지 않은 미션 코드입니다.",
+                    ephemeral=True
+                )
+                return
+            
+            # 원본 임베드 가져오기
+            original_embed = interaction.message.embeds[0]
+            
+            # 승인된 임베드 생성
+            approved_embed = discord.Embed(
+                title="✅ Submission Approved",
+                color=0x00FF00,  # Green
+                timestamp=original_embed.timestamp
+            )
+            
+            # 원본 필드 복사 및 수정
+            for field in original_embed.fields:
+                approved_embed.add_field(
+                    name=field.name,
+                    value=field.value,
+                    inline=field.inline
+                )
+            
+            # 마일스톤 보상이 있다면 추가
+            if milestone_rewards:
+                milestone_text = "\n".join([
+                    f"🎯 **{QUEST_INFO[r['mission']]['name']}**: +{r['xp']} XP"
+                    for r in milestone_rewards
+                ])
+                approved_embed.add_field(
+                    name="🎉 Milestone Achieved!",
+                    value=milestone_text,
+                    inline=False
+                )
+            
+            # Footer에 승인자 정보 추가
+            approved_embed.set_footer(text=f"Approved by {interaction.user.display_name}")
+            
+            # 버튼 비활성화된 View 생성
+            disabled_view = discord.ui.View()
+            disabled_view.add_item(
+                discord.ui.Button(
+                    label="✅ Approved",
+                    style=discord.ButtonStyle.green,
+                    disabled=True
+                )
+            )
+            disabled_view.add_item(
+                discord.ui.Button(
+                    label="❌ Reject",
+                    style=discord.ButtonStyle.red,
+                    disabled=True
+                )
+            )
+            
+            # 메시지 수정
+            await interaction.message.edit(embed=approved_embed, view=disabled_view)
             
             # 사용자에게 DM 전송
             try:
                 user = await self.bot.fetch_user(user_id)
                 dm_embed = discord.Embed(
-                    title="✅ 퀘스트 승인됨!",
-                    description=f"**{quest_info['name']}**이(가) 승인되었습니다!",
+                    title="🎉 Submission Approved!",
+                    description=f"Your submission for **{quest_info['name']}** has been approved!",
                     color=discord.Color.green()
                 )
-                dm_embed.add_field(name="획득 XP", value=f"{quest_info['xp']} XP", inline=True)
+                dm_embed.add_field(
+                    name="XP Earned",
+                    value=f"+{quest_info['xp']} XP",
+                    inline=True
+                )
                 
                 # 마일스톤 보상이 있다면 추가
                 if milestone_rewards:
+                    total_milestone_xp = sum(r['xp'] for r in milestone_rewards)
                     milestone_text = "\n".join([
                         f"🎯 {QUEST_INFO[r['mission']]['name']}: +{r['xp']} XP"
                         for r in milestone_rewards
                     ])
                     dm_embed.add_field(
-                        name="마일스톤 달성!",
-                        value=milestone_text,
+                        name="🎉 Milestone Achieved!",
+                        value=f"{milestone_text}\n\n**Total Bonus:** +{total_milestone_xp} XP",
                         inline=False
                     )
                 
                 await user.send(embed=dm_embed)
-            except:
-                pass  # DM 전송 실패 시 무시
+            except Exception as e:
+                print(f"⚠️ DM 전송 실패 (User ID: {user_id}): {e}")
             
             # 역할 업데이트
-            await self._update_user_roles(user_id, interaction.guild)
+            if interaction.guild:
+                await self._update_user_roles(user_id, interaction.guild)
             
-            # 승인 메시지 업데이트
-            embed = interaction.message.embeds[0]
-            embed.color = discord.Color.green()
-            embed.add_field(name="승인 상태", value=f"✅ 승인됨 by {interaction.user.mention}", inline=False)
+            # 성공 메시지
+            await interaction.followup.send(
+                "✅ Submission approved successfully!",
+                ephemeral=True
+            )
             
-            if milestone_rewards:
-                milestone_text = "\n".join([
-                    f"🎯 {QUEST_INFO[r['mission']]['name']}: +{r['xp']} XP"
-                    for r in milestone_rewards
-                ])
-                embed.add_field(name="마일스톤 달성", value=milestone_text, inline=False)
-            
-            await interaction.response.edit_message(embed=embed, view=None)
-        else:
-            await interaction.response.send_message(f"❌ {message}", ephemeral=True)
+        except Exception as e:
+            print(f"❌ 승인 처리 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send(
+                f"❌ 승인 처리 중 오류가 발생했습니다: {str(e)}",
+                ephemeral=True
+            )
     
-    @discord.ui.button(label="❌ 거부", style=discord.ButtonStyle.red, custom_id="reject_btn")
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.red, custom_id="reject_btn")
     async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """거부 버튼 처리"""
         # 관리자 권한 체크
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ 관리자만 거부할 수 있습니다.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ 관리자만 거부할 수 있습니다.",
+                ephemeral=True
+            )
             return
         
         # 반려 사유 입력 모달 표시
@@ -483,64 +603,119 @@ class RejectionReasonModal(Modal, title="반려 사유 작성"):
     
     async def on_submit(self, interaction: discord.Interaction):
         """반려 사유 제출 처리"""
-        reason = self.reason_input.value
+        reason = self.reason_input.value.strip()
         
-        # 반려 처리
-        self.db.reject_submission(self.submission_id, reason)
-        
-        submission = self.db.get_submission(self.submission_id)
-        user_id = submission['user_id']
-        mission_code = submission['mission_code']
-        quest_info = QUEST_INFO.get(mission_code, {})
-        quest_name = quest_info.get('name', mission_code)
-        
-        # 사용자에게 DM 전송
-        try:
-            user = await self.bot.fetch_user(user_id)
-            dm_embed = discord.Embed(
-                title="❌ 퀘스트 반려됨",
-                description=f"**{quest_name}** 제출이 반려되었습니다.",
-                color=discord.Color.red()
+        if not reason:
+            await interaction.response.send_message(
+                "❌ 반려 사유를 입력해주세요.",
+                ephemeral=True
             )
-            dm_embed.add_field(name="반려 사유", value=reason, inline=False)
-            dm_embed.add_field(
-                name="재제출",
-                value="`/sz` 명령어를 사용하여 다시 제출할 수 있습니다.",
+            return
+        
+        # 응답 지연
+        await interaction.response.defer()
+        
+        try:
+            # 반려 처리
+            self.db.reject_submission(self.submission_id, reason)
+            
+            submission = self.db.get_submission(self.submission_id)
+            if not submission:
+                await interaction.followup.send(
+                    "❌ 제출 정보를 찾을 수 없습니다.",
+                    ephemeral=True
+                )
+                return
+            
+            user_id = submission['user_id']
+            mission_code = submission['mission_code']
+            quest_info = QUEST_INFO.get(mission_code, {})
+            quest_name = quest_info.get('name', f"Mission {mission_code}")
+            
+            # 원본 임베드 가져오기
+            original_embed = interaction.message.embeds[0]
+            
+            # 거부된 임베드 생성
+            rejected_embed = discord.Embed(
+                title="❌ Submission Rejected",
+                color=0xFF0000,  # Red
+                timestamp=original_embed.timestamp
+            )
+            
+            # 원본 필드 복사
+            for field in original_embed.fields:
+                rejected_embed.add_field(
+                    name=field.name,
+                    value=field.value,
+                    inline=field.inline
+                )
+            
+            # 반려 사유 추가
+            rejected_embed.add_field(
+                name="❌ Rejection Reason",
+                value=reason,
                 inline=False
             )
-            await user.send(embed=dm_embed)
-        except:
-            pass
-        
-        # 반려 메시지 업데이트
-        original_embed = None
-        async for message in interaction.channel.history(limit=10):
-            if message.embeds and message.embeds[0].fields:
-                for field in message.embeds[0].fields:
-                    if field.name == "제출 ID" and f"#{self.submission_id}" in field.value:
-                        original_embed = message.embeds[0]
-                        break
-            if original_embed:
-                break
-        
-        if original_embed:
-            original_embed.color = discord.Color.red()
-            original_embed.add_field(name="승인 상태", value=f"❌ 거부됨 by {interaction.user.mention}", inline=False)
-            original_embed.add_field(name="반려 사유", value=reason, inline=False)
             
-            # 원본 메시지 찾아서 업데이트
-            async for message in interaction.channel.history(limit=10):
-                if message.embeds and len(message.embeds) > 0:
-                    if message.embeds[0].title == "새로운 퀘스트 제출":
-                        for field in message.embeds[0].fields:
-                            if field.name == "제출 ID" and f"#{self.submission_id}" in field.value:
-                                await message.edit(embed=original_embed, view=None)
-                                break
-        
-        await interaction.response.send_message(
-            f"✅ 반려 처리 완료. 반려 사유가 사용자에게 전송되었습니다.",
-            ephemeral=True
-        )
+            # Footer에 거부자 정보 추가
+            rejected_embed.set_footer(text=f"Rejected by {interaction.user.display_name}")
+            
+            # 버튼 비활성화된 View 생성
+            disabled_view = discord.ui.View()
+            disabled_view.add_item(
+                discord.ui.Button(
+                    label="✅ Approve",
+                    style=discord.ButtonStyle.green,
+                    disabled=True
+                )
+            )
+            disabled_view.add_item(
+                discord.ui.Button(
+                    label="❌ Rejected",
+                    style=discord.ButtonStyle.red,
+                    disabled=True
+                )
+            )
+            
+            # 메시지 수정
+            await interaction.message.edit(embed=rejected_embed, view=disabled_view)
+            
+            # 사용자에게 DM 전송
+            try:
+                user = await self.bot.fetch_user(user_id)
+                dm_embed = discord.Embed(
+                    title="⚠️ Submission Rejected",
+                    description=f"Your submission for **{quest_name}** was rejected.",
+                    color=discord.Color.red()
+                )
+                dm_embed.add_field(
+                    name="Reason",
+                    value=reason,
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="Next Steps",
+                    value="Please check the guidelines and try again using `/sz` command.",
+                    inline=False
+                )
+                await user.send(embed=dm_embed)
+            except Exception as e:
+                print(f"⚠️ DM 전송 실패 (User ID: {user_id}): {e}")
+            
+            # 성공 메시지
+            await interaction.followup.send(
+                "✅ Submission rejected. User has been notified.",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            print(f"❌ 거부 처리 중 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send(
+                f"❌ 거부 처리 중 오류가 발생했습니다: {str(e)}",
+                ephemeral=True
+            )
     
     async def _update_user_roles(self, user_id: int, guild: discord.Guild):
         """사용자 역할 업데이트"""
