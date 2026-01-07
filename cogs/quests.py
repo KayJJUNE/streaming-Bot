@@ -5,6 +5,20 @@ from discord.ui import Modal, Select, View
 from database import Database, QUEST_INFO, TIER_SYSTEM
 import os
 
+def draw_progress_bar(current_xp: int, target_xp: int, bar_length: int = 10) -> str:
+    """XP 진행 바를 생성하는 헬퍼 함수"""
+    if target_xp <= 0:
+        return f"[{'█' * bar_length}] 100%"
+    
+    percentage = min(current_xp / target_xp, 1.0) if target_xp > 0 else 1.0
+    filled = int(percentage * bar_length)
+    empty = bar_length - filled
+    
+    bar = "█" * filled + "░" * empty
+    percentage_text = int(percentage * 100)
+    
+    return f"[{bar}] {percentage_text}%"
+
 class QuestsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -12,42 +26,112 @@ class QuestsCog(commands.Cog):
     
     @app_commands.command(name="sz", description="퀘스트 보드 및 제출")
     async def sz(self, interaction: discord.Interaction):
-        """퀘스트 보드 표시 및 제출 모달"""
+        """퀘스트 보드 표시 및 제출 모달 (Sci-Fi RPG 스타일)"""
         user = self.db.get_or_create_user(interaction.user.id)
         
         # 반려된 제출 확인
         rejected_submissions = self.db.get_rejected_submissions(interaction.user.id)
         
+        # Sci-Fi RPG 스타일 임베드
         embed = discord.Embed(
-            title="🎮 Spot Zero Quest Board",
-            description="Complete quests below to earn XP and level up your tier!",
-            color=discord.Color.gold()
+            title="🛡️ Spot Zero: Agent Status Board",
+            description="> Welcome, Agent. Complete missions to increase your clearance level.",
+            color=0x00F0FF  # Neon Blue
         )
         
-        # 직접 제출 퀘스트
-        direct_quests = []
-        for code, info in QUEST_INFO.items():
-            if info['type'] in ['one-time', 'repeatable']:
-                status = "✅ Completed" if self.db.is_quest_completed(interaction.user.id, code) else "⏳ Not Completed"
-                if info['type'] == 'repeatable':
-                    count = self.db.get_approved_count(interaction.user.id, code)
-                    status = f"✅ {count} times completed (Repeatable)"
-                
-                direct_quests.append(
-                    f"**{code}: {info['name']}** - {info['xp']} XP\n"
-                    f"Status: {status}"
-                )
+        # 사용자 아바타를 썸네일로
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
         
-        # 직접 제출 퀘스트 설명 추가
-        direct_quests_text = "**Submit quests manually by selecting from the dropdown below.**\n"
-        direct_quests_text += "• **One-time quests** can only be completed once\n"
-        direct_quests_text += "• **Repeatable quests** can be submitted multiple times\n\n"
-        direct_quests_text += "---\n\n"
-        direct_quests_text += "\n\n".join(direct_quests) if direct_quests else "No quests available"
+        # 현재 티어 정보
+        total_xp = user['total_xp']
+        current_tier = self.db.get_user_tier(total_xp)
+        tier_info = TIER_SYSTEM[current_tier]
+        
+        # 다음 티어 찾기
+        next_tier = None
+        for tier_level, info in sorted(TIER_SYSTEM.items()):
+            if info['xp_required'] > total_xp:
+                next_tier = (tier_level, info)
+                break
+        
+        # XP 진행 바 생성
+        if next_tier:
+            target_xp = next_tier[1]['xp_required']
+            current_progress = total_xp - tier_info['xp_required']
+            progress_needed = target_xp - tier_info['xp_required']
+            progress_bar = draw_progress_bar(current_progress, progress_needed)
+            xp_to_next = target_xp - total_xp
+        else:
+            # 최대 레벨인 경우
+            progress_bar = draw_progress_bar(1, 1)  # 100%
+            xp_to_next = 0
+        
+        # 티어 이모지 매핑
+        tier_emojis = {
+            1: "🥉",
+            2: "🥈",
+            3: "🥇",
+            4: "💎",
+            5: "👑"
+        }
+        tier_emoji = tier_emojis.get(current_tier, "⭐")
+        
+        # 사용자 프로필 필드
+        profile_text = f"{tier_emoji} **Current Rank:** {tier_info['name']} (Lv.{current_tier})\n"
+        profile_text += f"📊 **Total XP:** {total_xp:,}\n"
+        profile_text += f"📈 **Progress:** {progress_bar}\n"
+        
+        if next_tier and xp_to_next > 0:
+            profile_text += f"🎯 **Next Tier Goal:** {xp_to_next:,} XP to {next_tier[1]['name']}"
+        else:
+            profile_text += f"🏆 **Status:** Maximum Rank Achieved!"
         
         embed.add_field(
-            name="📝 Direct Submission Quests",
-            value=direct_quests_text,
+            name="👤 User Profile",
+            value=profile_text,
+            inline=False
+        )
+        
+        # 직접 제출 퀘스트 (One-time & Repeatable)
+        one_time_quests = []
+        repeatable_quests = []
+        
+        for code, info in QUEST_INFO.items():
+            if info['type'] == 'one-time':
+                is_completed = self.db.is_quest_completed(interaction.user.id, code)
+                status_emoji = "✅" if is_completed else "⬜"
+                status_text = "Completed" if is_completed else "Not Started"
+                
+                one_time_quests.append(
+                    f"> **[ Mission {code} ]** {info['name']}\n"
+                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`"
+                )
+            elif info['type'] == 'repeatable':
+                count = self.db.get_approved_count(interaction.user.id, code)
+                status_emoji = "🔄"
+                
+                repeatable_quests.append(
+                    f"> **[ Mission {code} ]** {info['name']}\n"
+                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} Repeatable ({count} completed)`"
+                )
+        
+        # Active Missions 필드
+        missions_text = ""
+        
+        if one_time_quests:
+            missions_text += "**⚔️ One-Time Missions:**\n"
+            missions_text += "\n".join(one_time_quests) + "\n\n"
+        
+        if repeatable_quests:
+            missions_text += "**🔄 Repeatable Missions:**\n"
+            missions_text += "\n".join(repeatable_quests) + "\n\n"
+        
+        if not one_time_quests and not repeatable_quests:
+            missions_text = "> No active missions available."
+        
+        embed.add_field(
+            name="📜 Active Missions",
+            value=missions_text,
             inline=False
         )
         
@@ -56,7 +140,8 @@ class QuestsCog(commands.Cog):
         for code, info in QUEST_INFO.items():
             if info['type'] == 'milestone':
                 is_completed = self.db.is_quest_completed(interaction.user.id, code)
-                status = "✅ Completed" if is_completed else "⏳ In Progress"
+                status_emoji = "✅" if is_completed else "📡"
+                status_text = "Completed" if is_completed else "In Progress"
                 
                 # 진행도 표시
                 if code == 'D':
@@ -75,59 +160,26 @@ class QuestsCog(commands.Cog):
                     progress = ""
                 
                 milestone_quests.append(
-                    f"**{code}: {info['name']}** - {info['xp']} XP {progress}\n"
-                    f"Status: {status}"
+                    f"> **[ Mission {code} ]** {info['name']} {progress}\n"
+                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`"
                 )
         
-        # 마일스톤 퀘스트 설명 추가
-        milestone_quests_text = "**These quests are automatically completed when you reach certain milestones.**\n"
-        milestone_quests_text += "• Progress is tracked automatically based on your approved submissions\n"
-        milestone_quests_text += "• Rewards are granted instantly when milestones are reached\n\n"
-        milestone_quests_text += "---\n\n"
-        milestone_quests_text += "\n\n".join(milestone_quests) if milestone_quests else "No milestone quests available"
-        
-        embed.add_field(
-            name="🎯 Milestone Quests (Auto-complete)",
-            value=milestone_quests_text,
-            inline=False
-        )
-        
-        # 현재 티어 정보
-        total_xp = user['total_xp']
-        current_tier = self.db.get_user_tier(total_xp)
-        tier_info = TIER_SYSTEM[current_tier]
-        
-        next_tier = None
-        for tier_level, info in sorted(TIER_SYSTEM.items()):
-            if info['xp_required'] > total_xp:
-                next_tier = (tier_level, info)
-                break
-        
-        tier_text = f"**{tier_info['name']}** (Lv.{current_tier})"
-        if next_tier:
-            tier_text += f"\n**Next Tier:** {next_tier[1]['name']} (Lv.{next_tier[0]}) - {next_tier[1]['xp_required'] - total_xp:,} XP needed"
-        
-        embed.add_field(
-            name="🏆 Current Tier",
-            value=tier_text,
-            inline=False
-        )
-        
-        # 반려된 제출이 있으면 표시
-        if rejected_submissions:
-            rejected_text = ""
-            for sub in rejected_submissions[:5]:  # 최근 5개만 표시
-                quest_name = QUEST_INFO.get(sub['mission_code'], {}).get('name', sub['mission_code'])
-                reason = sub.get('rejection_reason', 'No reason provided')
-                rejected_text += f"**{quest_name}** ({sub['mission_code']}): {reason}\n"
+        if milestone_quests:
+            milestone_text = "**🎁 Milestone Rewards (Auto-complete):**\n"
+            milestone_text += "\n".join(milestone_quests)
             
             embed.add_field(
-                name="❌ Rejected Submissions",
-                value=rejected_text if rejected_text else "None",
+                name="🎯 Milestone Quests",
+                value=milestone_text,
                 inline=False
             )
         
-        embed.set_footer(text=f"Total XP: {total_xp:,}")
+        # Footer 설정
+        guild_icon = interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None
+        embed.set_footer(
+            text="Select a mission below to submit proof.",
+            icon_url=guild_icon
+        )
         
         # 드롭다운 메뉴가 포함된 View 추가
         view = QuestSelectView(interaction.user.id, self.db, self.bot)

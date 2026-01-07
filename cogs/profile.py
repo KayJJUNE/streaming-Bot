@@ -10,28 +10,30 @@ class ProfileCog(commands.Cog):
     
     @app_commands.command(name="ranking", description="랭킹 보드 확인")
     async def ranking(self, interaction: discord.Interaction):
-        """랭킹 보드 표시 (20위까지, 자신이 밖이면 하단 표시)"""
-        leaderboard = self.db.get_leaderboard(limit=20)
+        """랭킹 보드 표시 (Cyberpunk Hall of Fame 스타일)"""
+        leaderboard = self.db.get_leaderboard(limit=10)
         
         if not leaderboard:
-            await interaction.response.send_message("리더보드에 데이터가 없습니다.", ephemeral=True)
+            await interaction.response.send_message("No leaderboard data available.", ephemeral=True)
             return
         
         embed = discord.Embed(
-            title="🏆 Spot Zero 랭킹 보드",
-            description="상위 20명의 사용자",
-            color=discord.Color.gold()
+            title="🏆 Spot Zero: Agent Leaderboard",
+            description="> Top agents ranked by clearance level and mission completion.",
+            color=0xFFD700  # Gold
         )
         
-        leaderboard_text = ""
+        # 서버 아이콘 또는 트로피 아이콘을 썸네일로
+        if interaction.guild and interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        
+        # Top 3 (Agents of Legend)
+        top3_text = ""
         medals = ["🥇", "🥈", "🥉"]
+        place_names = ["1st Place", "2nd Place", "3rd Place"]
         
-        # 사용자 순위 찾기
-        user_rank = None
-        user_xp = None
-        user_in_top_20 = False
-        
-        for idx, entry in enumerate(leaderboard, 1):
+        for idx in range(min(3, len(leaderboard))):
+            entry = leaderboard[idx]
             user_id = entry['user_id']
             total_xp = entry['total_xp']
             tier = self.db.get_user_tier(total_xp)
@@ -43,24 +45,49 @@ class ProfileCog(commands.Cog):
             except:
                 username = f"User {user_id}"
             
-            medal = medals[idx - 1] if idx <= 3 else f"**{idx}.**"
-            
-            leaderboard_text += (
-                f"{medal} {username} - **{tier_info['name']}** "
-                f"(Lv.{tier}) - {total_xp:,} XP\n"
+            top3_text += (
+                f"> **{medals[idx]} {place_names[idx]}** | **{username}**\n"
+                f"> `[{tier_info['name']}] • {total_xp:,} XP`\n\n"
             )
+        
+        if top3_text:
+            embed.add_field(
+                name="👑 Agents of Legend",
+                value=top3_text,
+                inline=False
+            )
+        
+        # Ranks 4-10 (Rising Agents) - Code Block 스타일
+        if len(leaderboard) > 3:
+            code_block_text = ""
+            for idx in range(3, min(10, len(leaderboard))):
+                entry = leaderboard[idx]
+                user_id = entry['user_id']
+                total_xp = entry['total_xp']
+                tier = self.db.get_user_tier(total_xp)
+                tier_info = TIER_SYSTEM[tier]
+                
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    username = user.display_name.replace('`', '')  # Code block 내 특수문자 제거
+                except:
+                    username = f"User_{user_id}"
+                
+                rank_num = idx + 1
+                code_block_text += f"#{rank_num:02d} | {total_xp:>6,} XP | {username}\n"
             
-            # 자신의 순위 확인
-            if user_id == interaction.user.id:
-                user_rank = idx
-                user_xp = total_xp
-                user_in_top_20 = True
+            if code_block_text:
+                embed.add_field(
+                    name="📡 Rising Agents",
+                    value=f"```text\n{code_block_text}```",
+                    inline=False
+                )
         
-        embed.description = leaderboard_text
+        # 사용자 자신의 순위 (20위 밖이면 표시)
+        user_in_top_10 = any(entry['user_id'] == interaction.user.id for entry in leaderboard[:10])
         
-        # 자신이 20위 안에 없으면 전체 순위 찾기
-        if not user_in_top_20:
-            all_users = self.db.get_leaderboard(limit=1000)  # 충분히 큰 수
+        if not user_in_top_10:
+            all_users = self.db.get_leaderboard(limit=1000)
             user_rank = None
             user_xp = None
             
@@ -77,13 +104,13 @@ class ProfileCog(commands.Cog):
                 embed.add_field(
                     name="━━━━━━━━━━━━━━━━━━━━",
                     value=(
-                        f"**{user_rank}.** {interaction.user.display_name} - "
-                        f"**{tier_info['name']}** (Lv.{tier}) - {user_xp:,} XP"
+                        f"> **#{user_rank}** | **{interaction.user.display_name}**\n"
+                        f"> `[{tier_info['name']}] • {user_xp:,} XP`"
                     ),
                     inline=False
                 )
         
-        embed.set_footer(text="더 많은 XP를 획득하여 상위권에 도전하세요!")
+        embed.set_footer(text="Complete more missions to climb the ranks!")
         
         await interaction.response.send_message(embed=embed)
     
