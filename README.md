@@ -134,4 +134,3 @@ SQLite 데이터베이스 (`database.db`)에 다음 정보가 저장됩니다:
 ## 라이선스
 
 이 프로젝트는 Spot Zero Ambassador Program을 위해 제작되었습니다.
-
