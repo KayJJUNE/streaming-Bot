@@ -36,6 +36,16 @@ Railway 빌드 과정에서 `mise`가 Python을 자동 설치할 때, **지원�
 - Railway에서 캐시 삭제 후 재배포하거나
 - `.tool-versions`의 버전을 3.12.x 다른 버전으로 바꿔 재시도하세요.
 
+### (권장) Dockerfile로 빌드 고정
+
+빌드가 계속 `mise install`을 타면서 Python 설치에 실패한다면, 가장 확실한 해결은 **Dockerfile 빌드로 전환**하는 것입니다.
+
+이 레포에는 `Dockerfile`이 포함되어 있으며, Railway는 보통 Dockerfile을 감지하면 Docker 빌드를 사용합니다.
+
+Docker 빌드 사용 시:
+- Python 버전은 `python:3.12-slim` 이미지로 고정됩니다.
+- `mise` / Nixpacks 경로를 타지 않아 Python 설치 오류가 사라집니다.
+
 ### 필수 환경 변수
 
 1. **DISCORD_BOT_TOKEN**
