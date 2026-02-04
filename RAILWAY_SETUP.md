@@ -26,6 +26,16 @@
 
 Railway 대시보드에서 다음 환경 변수를 설정하세요:
 
+## 2.1 Python 버전 고정 (중요)
+
+Railway 빌드 과정에서 `mise`가 Python을 자동 설치할 때, **지원되지 않는 버전(예: 3.13.x)** 을 잡으면 설치가 실패할 수 있습니다.
+
+이 레포는 `.tool-versions` / `.python-version` 으로 **Python 3.12.9** 를 고정했습니다.
+
+만약 빌드 로그에서 Python 설치 오류가 계속 나오면:
+- Railway에서 캐시 삭제 후 재배포하거나
+- `.tool-versions`의 버전을 3.12.x 다른 버전으로 바꿔 재시도하세요.
+
 ### 필수 환경 변수
 
 1. **DISCORD_BOT_TOKEN**
