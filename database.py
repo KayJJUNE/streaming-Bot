@@ -523,3 +523,25 @@ class Database:
         finally:
             cursor.close()
             conn.close()
+
+    def get_xp_logs(self, user_id: int, limit: int = 15) -> List[Dict]:
+        """사용자의 XP 획득 이력 조회 (최신순)"""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            cursor.execute(
+                '''
+                SELECT mission_name, xp_amount, created_at
+                FROM xp_logs
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                ''',
+                (user_id, limit),
+            )
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            cursor.close()
+            conn.close()
