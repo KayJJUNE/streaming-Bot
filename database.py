@@ -7,7 +7,14 @@ import json
 
 # 퀘스트 정보 정의
 QUEST_INFO = {
-    'A': {'name': 'SNF Promo Video', 'xp': 150, 'type': 'one-time', 'requires_snapshot': False},
+    'A': {
+        'name': 'SNF Promo Video',
+        'xp': 150,
+        'type': 'one-time',
+        'requires_snapshot': False,
+        'video_url': 'https://youtu.be/sB-YkpZ-9bo',
+        'short_description': 'Share the video or create an explanation video.',
+    },
     'B': {'name': 'Upload 1 Video', 'xp': 80, 'type': 'repeatable', 'requires_snapshot': False},
     'C': {'name': 'Live Stream 1 Time', 'xp': 100, 'type': 'repeatable', 'requires_snapshot': False},
     'D': {'name': 'Accumulate 5 approved Videos', 'xp': 200, 'type': 'milestone', 'requires_snapshot': False},

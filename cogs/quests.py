@@ -102,10 +102,16 @@ class QuestsCog(commands.Cog):
                 status_emoji = "✅" if is_completed else "⬜"
                 status_text = "Completed" if is_completed else "Not Started"
                 
-                one_time_quests.append(
-                    f"> **[ Mission {code} ]** {info['name']}\n"
-                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`"
-                )
+                lines = [
+                    f"> **[ Mission {code} ]** {info['name']}\n",
+                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`",
+                ]
+                if info.get('video_url'):
+                    lines.insert(1, f"> 🔗 {info['video_url']}\n")
+                if info.get('short_description'):
+                    lines.insert(2 if info.get('video_url') else 1, f"> *{info['short_description']}*\n")
+                
+                one_time_quests.append("".join(lines))
             elif info['type'] == 'repeatable':
                 count = self.db.get_approved_count(interaction.user.id, code)
                 status_emoji = "🔄"
