@@ -24,7 +24,7 @@ class QuestsCog(commands.Cog):
         self.bot = bot
         self.db = Database()
     
-    @app_commands.command(name="sz", description="퀘스트 보드 및 제출")
+    @app_commands.command(name="sz", description="Open your Agent Status Board and submit quest proof")
     async def sz(self, interaction: discord.Interaction):
         """퀘스트 보드 표시 및 제출 모달 (Sci-Fi RPG 스타일)"""
         user = self.db.get_or_create_user(interaction.user.id)

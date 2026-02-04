@@ -8,7 +8,7 @@ class ProfileCog(commands.Cog):
         self.bot = bot
         self.db = Database()
     
-    @app_commands.command(name="ranking", description="랭킹 보드 확인")
+    @app_commands.command(name="ranking", description="View the Spot Zero agent leaderboard")
     async def ranking(self, interaction: discord.Interaction):
         """랭킹 보드 표시 (Cyberpunk Hall of Fame 스타일)"""
         leaderboard = self.db.get_leaderboard(limit=10)
@@ -114,7 +114,7 @@ class ProfileCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="log", description="XP 획득 이력 확인")
+    @app_commands.command(name="log", description="View your recent XP acquisition history")
     async def log(self, interaction: discord.Interaction):
         """XP 획득 이력 표시"""
         user = self.db.get_or_create_user(interaction.user.id)
