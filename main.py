@@ -45,19 +45,28 @@ async def on_ready():
     asyncio.create_task(update_all_user_roles())
 
 async def update_all_user_roles():
-    """서버의 모든 사용자 역할 업데이트"""
+    """서버의 모든 사용자 역할 업데이트. DB 호출은 to_thread로 해서 이벤트 루프(하트비트) 블로킹 방지."""
     for guild in bot.guilds:
         for member in guild.members:
             if not member.bot:
-                user = db.get_user(member.id)
+                try:
+                    user = await asyncio.to_thread(db.get_user, member.id)
+                except Exception as e:
+                    logger.warning("역할 업데이트용 유저 조회 실패 user_id=%s error=%s", member.id, e)
+                    continue
                 if user:
-                    await update_user_roles(member.id, guild)
+                    await update_user_roles(member.id, guild, user=user)
 
-async def update_user_roles(user_id: int, guild: discord.Guild):
-    """사용자 역할 업데이트"""
+async def update_user_roles(user_id: int, guild: discord.Guild, *, user=None):
+    """사용자 역할 업데이트. user가 없으면 to_thread로 조회."""
     from database import TIER_SYSTEM
-    
-    user = db.get_user(user_id)
+
+    if user is None:
+        try:
+            user = await asyncio.to_thread(db.get_user, user_id)
+        except Exception as e:
+            logger.warning("역할 업데이트용 유저 조회 실패 user_id=%s error=%s", user_id, e)
+            return
     if not user:
         return
     
@@ -86,8 +95,10 @@ async def update_user_roles(user_id: int, guild: discord.Guild):
         if role not in member.roles:
             try:
                 await member.add_roles(role, reason=f"티어 업그레이드: Lv.{current_tier}")
+            except discord.Forbidden:
+                logger.warning("역할 추가 권한 없음 (서버 역할 순서 확인) user_id=%s role=%s", user_id, role.name)
             except Exception as e:
-                print(f"역할 추가 실패 (User: {user_id}, Role: {role.name}): {e}")
+                logger.warning("역할 추가 실패 user_id=%s role=%s error=%s", user_id, role.name, e)
     
     # 현재 티어보다 높은 역할 제거
     for tier_level in range(current_tier + 1, 6):
@@ -96,8 +107,10 @@ async def update_user_roles(user_id: int, guild: discord.Guild):
             if role in member.roles:
                 try:
                     await member.remove_roles(role, reason=f"티어 다운그레이드")
+                except discord.Forbidden:
+                    logger.warning("역할 제거 권한 없음 (서버 역할 순서 확인) user_id=%s role=%s", user_id, role.name)
                 except Exception as e:
-                    print(f"역할 제거 실패 (User: {user_id}, Role: {role.name}): {e}")
+                    logger.warning("역할 제거 실패 user_id=%s role=%s error=%s", user_id, role.name, e)
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -146,6 +159,16 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     user_id = getattr(interaction.user, "id", None)
     user_name = getattr(interaction.user, "display_name", str(user_id))
     command_name = interaction.command.name if interaction.command else "unknown"
+    original = getattr(error, "original", error)
+    # Unknown interaction (10062): 인터랙션이 이미 만료됨(3초 초과 또는 이벤트 루프 지연). 응답 불가.
+    if getattr(original, "code", None) == 10062 or isinstance(original, discord.NotFound):
+        logger.warning(
+            "인터랙션 만료(봇 응답 지연) user_id=%s user=%s command=%s - 유저에게 커맨드 재실행 안내",
+            user_id,
+            user_name,
+            command_name,
+        )
+        return
     logger.exception(
         "유저 커맨드 오류 user_id=%s user=%s command=%s error=%s",
         user_id,
