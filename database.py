@@ -59,10 +59,19 @@ class Database:
                     total_submissions INTEGER DEFAULT 0,
                     approved_count INTEGER DEFAULT 0,
                     total_xp INTEGER DEFAULT 0,
+                    tier INTEGER DEFAULT 1,
+                    tier_name VARCHAR(50) DEFAULT 'Code SZ',
                     link_list TEXT[] DEFAULT '{}',
                     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            # 기존 테이블에 tier, tier_name 컬럼 추가 (PostgreSQL 14+ 또는 try/except)
+            try:
+                cursor.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS tier INTEGER DEFAULT 1')
+                cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tier_name VARCHAR(50) DEFAULT 'Code SZ'")
+            except Exception:
+                pass
             
             # 제출 기록 테이블 (상세 기록용)
             cursor.execute('''
@@ -142,8 +151,8 @@ class Database:
         
         try:
             cursor.execute('''
-                INSERT INTO users (user_id) 
-                VALUES (%s)
+                INSERT INTO users (user_id, tier, tier_name) 
+                VALUES (%s, 1, 'Code SZ')
                 ON CONFLICT (user_id) DO NOTHING
             ''', (user_id,))
             conn.commit()
@@ -274,6 +283,7 @@ class Database:
                     approved_count = approved_count + 1
                 WHERE user_id = %s
             ''', (xp_earned, user_id))
+            self._update_user_tier_in_db(user_id, cursor)
             
             # XP 로그 기록
             cursor.execute('''
@@ -294,6 +304,8 @@ class Database:
             # 누적 마일스톤 체크
             milestone_rewards = self._check_milestones(user_id, mission_code, cursor)
             
+            # 마일스톤으로 XP가 추가됐을 수 있으므로 티어 재계산
+            self._update_user_tier_in_db(user_id, cursor)
             conn.commit()
             return True, f"{xp_earned} XP를 획득했습니다.", milestone_rewards
             
@@ -304,6 +316,20 @@ class Database:
         finally:
             cursor.close()
             conn.close()
+    
+    def _update_user_tier_in_db(self, user_id: int, cursor) -> None:
+        """현재 total_xp 기준으로 users 테이블의 tier, tier_name 갱신 (cursor 사용)"""
+        cursor.execute('SELECT total_xp FROM users WHERE user_id = %s', (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return
+        total_xp = row[0]
+        tier = self.get_user_tier(total_xp)
+        tier_name = TIER_SYSTEM[tier]['name']
+        cursor.execute(
+            'UPDATE users SET tier = %s, tier_name = %s WHERE user_id = %s',
+            (tier, tier_name, user_id),
+        )
     
     def _check_milestones(self, user_id: int, approved_mission: str, cursor) -> List[Dict]:
         """누적 마일스톤 체크 및 보상 지급"""
@@ -370,6 +396,7 @@ class Database:
             SET total_xp = total_xp + %s
             WHERE user_id = %s
         ''', (xp_earned, user_id))
+        self._update_user_tier_in_db(user_id, cursor)
         
         # XP 로그 기록
         cursor.execute('''
@@ -425,6 +452,32 @@ class Database:
         finally:
             cursor.close()
             conn.close()
+    
+    def get_quest_board_data(self, user_id: int) -> Dict:
+        """퀘스트 보드(/sz)용 데이터를 한 번에 조회. 이벤트 루프 블로킹 방지를 위해 to_thread에서 호출용."""
+        user = self.get_or_create_user(user_id)
+        rejected_submissions = self.get_rejected_submissions(user_id)
+        one_time: Dict[str, bool] = {}
+        repeatable: Dict[str, int] = {}
+        milestone: Dict[str, Dict] = {}
+        for code, info in QUEST_INFO.items():
+            if info['type'] == 'one-time':
+                one_time[code] = self.is_quest_completed(user_id, code)
+            elif info['type'] == 'repeatable':
+                repeatable[code] = self.get_approved_count(user_id, code)
+            elif info['type'] == 'milestone':
+                milestone[code] = {
+                    'completed': self.is_quest_completed(user_id, code),
+                    'count_b': self.get_approved_count(user_id, 'B') if code in ('D', 'E') else 0,
+                    'count_c': self.get_approved_count(user_id, 'C') if code in ('F', 'G') else 0,
+                }
+        return {
+            'user': user,
+            'rejected_submissions': rejected_submissions,
+            'one_time': one_time,
+            'repeatable': repeatable,
+            'milestone': milestone,
+        }
     
     def get_user_submissions(self, user_id: int, status: Optional[str] = None) -> List[Dict]:
         """사용자의 제출 목록 조회"""
@@ -549,6 +602,52 @@ class Database:
             )
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def get_users_for_role_audit(self) -> List[Dict]:
+        """수동 롤 부여용: user_id, total_xp, tier, tier_name 목록 (total_xp 내림차순)"""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cursor.execute('''
+                SELECT user_id, total_xp, tier, tier_name
+                FROM users
+                ORDER BY total_xp DESC
+            ''')
+            rows = [dict(row) for row in cursor.fetchall()]
+            for r in rows:
+                if r.get('tier') is None or r.get('tier_name') is None:
+                    r['tier'] = self.get_user_tier(r['total_xp'])
+                    r['tier_name'] = TIER_SYSTEM[r['tier']]['name']
+            return rows
+        finally:
+            cursor.close()
+            conn.close()
+    
+    def sync_all_users_tier(self) -> int:
+        """모든 유저의 tier, tier_name을 total_xp 기준으로 동기화. 갱신된 행 수 반환."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT user_id, total_xp FROM users')
+            rows = cursor.fetchall()
+            updated = 0
+            for (user_id, total_xp) in rows:
+                tier = self.get_user_tier(total_xp)
+                tier_name = TIER_SYSTEM[tier]['name']
+                cursor.execute(
+                    'UPDATE users SET tier = %s, tier_name = %s WHERE user_id = %s',
+                    (tier, tier_name, user_id),
+                )
+                updated += cursor.rowcount
+            conn.commit()
+            return updated
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ sync_all_users_tier 오류: {e}")
+            return 0
         finally:
             cursor.close()
             conn.close()

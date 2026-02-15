@@ -4,6 +4,10 @@ from discord.ext import commands
 from discord.ui import Modal, Select, View
 from database import Database, QUEST_INFO, TIER_SYSTEM
 import os
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 def draw_progress_bar(current_xp: int, target_xp: int, bar_length: int = 10) -> str:
     """XP 진행 바를 생성하는 헬퍼 함수"""
@@ -26,35 +30,45 @@ class QuestsCog(commands.Cog):
     
     @app_commands.command(name="sz", description="Open your Agent Status Board and submit quest proof")
     async def sz(self, interaction: discord.Interaction):
-        """퀘스트 보드 표시 및 제출 모달 (Sci-Fi RPG 스타일)"""
-        user = self.db.get_or_create_user(interaction.user.id)
-        
-        # 반려된 제출 확인
-        rejected_submissions = self.db.get_rejected_submissions(interaction.user.id)
-        
+        """퀘스트 보드 표시 및 제출 모달 (Sci-Fi RPG 스타일). DB 조회는 스레드에서 수행해 이벤트 루프 블로킹 방지."""
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            data = await asyncio.to_thread(self.db.get_quest_board_data, interaction.user.id)
+        except Exception as e:
+            logger.error(
+                "sz 보드 데이터 조회 실패 user_id=%s error=%s",
+                interaction.user.id,
+                e,
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                "❌ 보드를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                ephemeral=True,
+            )
+            return
+
+        user = data['user']
+        # rejected_submissions는 보드에 표시하지 않지만 추후 확장용으로 반환됨
+
         # Sci-Fi RPG 스타일 임베드
         embed = discord.Embed(
             title="🛡️ Spot Zero: Agent Status Board",
             description="> Welcome, Agent. Complete missions to increase your clearance level.",
             color=0x00F0FF  # Neon Blue
         )
-        
-        # 사용자 아바타를 썸네일로
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        
-        # 현재 티어 정보
+
         total_xp = user['total_xp']
         current_tier = self.db.get_user_tier(total_xp)
         tier_info = TIER_SYSTEM[current_tier]
-        
-        # 다음 티어 찾기
+
         next_tier = None
         for tier_level, info in sorted(TIER_SYSTEM.items()):
             if info['xp_required'] > total_xp:
                 next_tier = (tier_level, info)
                 break
-        
-        # XP 진행 바 생성
+
         if next_tier:
             target_xp = next_tier[1]['xp_required']
             current_progress = total_xp - tier_info['xp_required']
@@ -62,134 +76,89 @@ class QuestsCog(commands.Cog):
             progress_bar = draw_progress_bar(current_progress, progress_needed)
             xp_to_next = target_xp - total_xp
         else:
-            # 최대 레벨인 경우
-            progress_bar = draw_progress_bar(1, 1)  # 100%
+            progress_bar = draw_progress_bar(1, 1)
             xp_to_next = 0
-        
-        # 티어 이모지 매핑
-        tier_emojis = {
-            1: "🥉",
-            2: "🥈",
-            3: "🥇",
-            4: "💎",
-            5: "👑"
-        }
+
+        tier_emojis = {1: "🥉", 2: "🥈", 3: "🥇", 4: "💎", 5: "👑"}
         tier_emoji = tier_emojis.get(current_tier, "⭐")
-        
-        # 사용자 프로필 필드
+
         profile_text = f"{tier_emoji} **Current Rank:** {tier_info['name']} (Lv.{current_tier})\n"
         profile_text += f"📊 **Total XP:** {total_xp:,}\n"
         profile_text += f"📈 **Progress:** {progress_bar}\n"
-        
         if next_tier and xp_to_next > 0:
             profile_text += f"🎯 **Next Tier Goal:** {xp_to_next:,} XP to {next_tier[1]['name']}"
         else:
             profile_text += f"🏆 **Status:** Maximum Rank Achieved!"
-        
-        embed.add_field(
-            name="👤 User Profile",
-            value=profile_text,
-            inline=False
-        )
-        
-        # 직접 제출 퀘스트 (One-time & Repeatable)
+        embed.add_field(name="👤 User Profile", value=profile_text, inline=False)
+
         one_time_quests = []
-        repeatable_quests = []
-        
         for code, info in QUEST_INFO.items():
-            if info['type'] == 'one-time':
-                is_completed = self.db.is_quest_completed(interaction.user.id, code)
-                status_emoji = "✅" if is_completed else "⬜"
-                status_text = "Completed" if is_completed else "Not Started"
-                
-                lines = [
-                    f"> **[ Mission {code} ]** {info['name']}\n",
-                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`",
-                ]
-                if info.get('video_url'):
-                    lines.insert(1, f"> 🔗 {info['video_url']}\n")
-                if info.get('short_description'):
-                    lines.insert(2 if info.get('video_url') else 1, f"> *{info['short_description']}*\n")
-                
-                one_time_quests.append("".join(lines))
-            elif info['type'] == 'repeatable':
-                count = self.db.get_approved_count(interaction.user.id, code)
-                status_emoji = "🔄"
-                
-                repeatable_quests.append(
-                    f"> **[ Mission {code} ]** {info['name']}\n"
-                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} Repeatable ({count} completed)`"
-                )
-        
-        # Active Missions 필드
+            if info['type'] != 'one-time':
+                continue
+            is_completed = data['one_time'].get(code, False)
+            status_emoji = "✅" if is_completed else "⬜"
+            status_text = "Completed" if is_completed else "Not Started"
+            lines = [
+                f"> **[ Mission {code} ]** {info['name']}\n",
+                f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`",
+            ]
+            if info.get('video_url'):
+                lines.insert(1, f"> 🔗 {info['video_url']}\n")
+            if info.get('short_description'):
+                lines.insert(2 if info.get('video_url') else 1, f"> *{info['short_description']}*\n")
+            one_time_quests.append("".join(lines))
+
+        repeatable_quests = []
+        for code, info in QUEST_INFO.items():
+            if info['type'] != 'repeatable':
+                continue
+            count = data['repeatable'].get(code, 0)
+            repeatable_quests.append(
+                f"> **[ Mission {code} ]** {info['name']}\n"
+                f"> `Reward: {info['xp']} XP` | `Status: 🔄 Repeatable ({count} completed)`"
+            )
+
         missions_text = ""
-        
         if one_time_quests:
-            missions_text += "**⚔️ One-Time Missions:**\n"
-            missions_text += "\n".join(one_time_quests) + "\n\n"
-        
+            missions_text += "**⚔️ One-Time Missions:**\n" + "\n".join(one_time_quests) + "\n\n"
         if repeatable_quests:
-            missions_text += "**🔄 Repeatable Missions:**\n"
-            missions_text += "\n".join(repeatable_quests) + "\n\n"
-        
-        if not one_time_quests and not repeatable_quests:
+            missions_text += "**🔄 Repeatable Missions:**\n" + "\n".join(repeatable_quests) + "\n\n"
+        if not missions_text:
             missions_text = "> No active missions available."
-        
-        embed.add_field(
-            name="📜 Active Missions",
-            value=missions_text,
-            inline=False
-        )
-        
-        # 마일스톤 퀘스트
+        embed.add_field(name="📜 Active Missions", value=missions_text, inline=False)
+
         milestone_quests = []
         for code, info in QUEST_INFO.items():
-            if info['type'] == 'milestone':
-                is_completed = self.db.is_quest_completed(interaction.user.id, code)
-                status_emoji = "✅" if is_completed else "📡"
-                status_text = "Completed" if is_completed else "In Progress"
-                
-                # 진행도 표시
-                if code == 'D':
-                    count = self.db.get_approved_count(interaction.user.id, 'B')
-                    progress = f"({count}/5)"
-                elif code == 'E':
-                    count = self.db.get_approved_count(interaction.user.id, 'B')
-                    progress = f"({count}/10)"
-                elif code == 'F':
-                    count = self.db.get_approved_count(interaction.user.id, 'C')
-                    progress = f"({count}/3)"
-                elif code == 'G':
-                    count = self.db.get_approved_count(interaction.user.id, 'C')
-                    progress = f"({count}/6)"
-                else:
-                    progress = ""
-                
-                milestone_quests.append(
-                    f"> **[ Mission {code} ]** {info['name']} {progress}\n"
-                    f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`"
-                )
-        
-        if milestone_quests:
-            milestone_text = "**🎁 Milestone Rewards (Auto-complete):**\n"
-            milestone_text += "\n".join(milestone_quests)
-            
-            embed.add_field(
-                name="🎯 Milestone Quests",
-                value=milestone_text,
-                inline=False
+            if info['type'] != 'milestone':
+                continue
+            m = data['milestone'].get(code, {})
+            is_completed = m.get('completed', False)
+            status_emoji = "✅" if is_completed else "📡"
+            status_text = "Completed" if is_completed else "In Progress"
+            if code == 'D':
+                progress = f"({m.get('count_b', 0)}/5)"
+            elif code == 'E':
+                progress = f"({m.get('count_b', 0)}/10)"
+            elif code == 'F':
+                progress = f"({m.get('count_c', 0)}/3)"
+            elif code == 'G':
+                progress = f"({m.get('count_c', 0)}/6)"
+            else:
+                progress = ""
+            milestone_quests.append(
+                f"> **[ Mission {code} ]** {info['name']} {progress}\n"
+                f"> `Reward: {info['xp']} XP` | `Status: {status_emoji} {status_text}`"
             )
-        
-        # Footer 설정
+
+        if milestone_quests:
+            milestone_text = "**🎁 Milestone Rewards (Auto-complete):**\n" + "\n".join(milestone_quests)
+            embed.add_field(name="🎯 Milestone Quests", value=milestone_text, inline=False)
+
         guild_icon = interaction.guild.icon.url if interaction.guild and interaction.guild.icon else None
-        embed.set_footer(
-            text="Select a mission below to submit proof.",
-            icon_url=guild_icon
-        )
-        
-        # 드롭다운 메뉴가 포함된 View 추가
+        embed.set_footer(text="Select a mission below to submit proof.", icon_url=guild_icon)
+
         view = QuestSelectView(interaction.user.id, self.db, self.bot)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class QuestSelectView(View):
@@ -344,7 +313,13 @@ class SubmissionModal(Modal):
                     link
                 )
             except Exception as e:
-                print(f"❌ 데이터베이스 오류: {e}")
+                logger.error(
+                    "퀘스트 제출 생성 실패 user_id=%s mission_code=%s error=%s",
+                    interaction.user.id,
+                    self.mission_code,
+                    e,
+                    exc_info=True,
+                )
                 await interaction.response.send_message(
                     "❌ 제출 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
                     ephemeral=True
@@ -361,7 +336,7 @@ class SubmissionModal(Modal):
             try:
                 admin_channel_id_str = os.getenv('ADMIN_CHANNEL_ID', '0')
                 if not admin_channel_id_str or admin_channel_id_str == 'your_channel_id_here':
-                    print("⚠️ ADMIN_CHANNEL_ID가 설정되지 않았습니다.")
+                    logger.warning("ADMIN_CHANNEL_ID가 설정되지 않음. 제출 user_id=%s", interaction.user.id)
                     # 관리자 채널이 없어도 제출은 성공했으므로 사용자에게는 성공 메시지 표시
                     return
                 
@@ -369,7 +344,11 @@ class SubmissionModal(Modal):
                 admin_channel = self.bot.get_channel(admin_channel_id)
                 
                 if not admin_channel:
-                    print(f"⚠️ 관리자 채널을 찾을 수 없습니다. (Channel ID: {admin_channel_id})")
+                    logger.warning(
+                        "관리자 채널을 찾을 수 없음 channel_id=%s 제출 user_id=%s",
+                        admin_channel_id,
+                        interaction.user.id,
+                    )
                     # 채널을 찾지 못해도 제출은 성공했으므로 계속 진행
                     return
                 
@@ -416,16 +395,29 @@ class SubmissionModal(Modal):
                 await admin_channel.send(embed=embed, view=view)
                 
             except ValueError:
-                print(f"⚠️ ADMIN_CHANNEL_ID가 유효하지 않은 숫자입니다: {admin_channel_id_str}")
+                logger.warning(
+                    "ADMIN_CHANNEL_ID 유효하지 않음 value=%s user_id=%s",
+                    admin_channel_id_str,
+                    interaction.user.id,
+                )
             except Exception as e:
-                print(f"⚠️ 관리자 채널로 메시지 전송 중 오류: {e}")
+                logger.error(
+                    "관리자 채널 전송 실패 user_id=%s submission_id=%s error=%s",
+                    interaction.user.id,
+                    submission_id,
+                    e,
+                    exc_info=True,
+                )
                 # 관리자 채널 전송 실패해도 제출은 성공했으므로 사용자에게는 성공 메시지 표시
         
         except Exception as e:
-            print(f"❌ 모달 제출 처리 중 예상치 못한 오류: {e}")
-            import traceback
-            traceback.print_exc()
-            
+            logger.exception(
+                "모달 제출 처리 중 예상치 못한 오류 user_id=%s mission_code=%s error=%s",
+                interaction.user.id,
+                getattr(self, "mission_code", None),
+                e,
+            )
+
             # 이미 응답을 보냈는지 확인
             if not interaction.response.is_done():
                 try:
@@ -576,8 +568,14 @@ class AdminApprovalView(discord.ui.View):
                 
                 await user.send(embed=dm_embed)
             except Exception as e:
-                print(f"⚠️ DM 전송 실패 (User ID: {user_id}): {e}")
-            
+                logger.error(
+                    "승인 알림 DM 전송 실패 user_id=%s submission_id=%s error=%s",
+                    user_id,
+                    self.submission_id,
+                    e,
+                    exc_info=True,
+                )
+
             # 역할 업데이트
             if interaction.guild:
                 await self._update_user_roles(user_id, interaction.guild)
@@ -589,9 +587,12 @@ class AdminApprovalView(discord.ui.View):
             )
             
         except Exception as e:
-            print(f"❌ 승인 처리 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(
+                "승인 처리 중 오류 submission_id=%s admin_id=%s error=%s",
+                self.submission_id,
+                interaction.user.id,
+                e,
+            )
             await interaction.followup.send(
                 f"❌ 승인 처리 중 오류가 발생했습니다: {str(e)}",
                 ephemeral=True
@@ -772,7 +773,13 @@ class RejectionReasonModal(Modal, title="반려 사유 작성"):
                 )
                 await user.send(embed=dm_embed)
             except Exception as e:
-                print(f"⚠️ DM 전송 실패 (User ID: {user_id}): {e}")
+                logger.error(
+                    "반려 알림 DM 전송 실패 user_id=%s submission_id=%s error=%s",
+                    user_id,
+                    self.submission_id,
+                    e,
+                    exc_info=True,
+                )
             
             # 성공 메시지
             await interaction.followup.send(
@@ -781,9 +788,12 @@ class RejectionReasonModal(Modal, title="반려 사유 작성"):
             )
             
         except Exception as e:
-            print(f"❌ 거부 처리 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(
+                "거부 처리 중 오류 submission_id=%s admin_id=%s error=%s",
+                self.submission_id,
+                interaction.user.id,
+                e,
+            )
             await interaction.followup.send(
                 f"❌ 거부 처리 중 오류가 발생했습니다: {str(e)}",
                 ephemeral=True

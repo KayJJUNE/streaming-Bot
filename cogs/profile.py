@@ -3,7 +3,10 @@ from discord import app_commands
 from discord.ext import commands
 from database import Database, QUEST_INFO, TIER_SYSTEM
 import asyncio
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 class ProfileCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -13,12 +16,27 @@ class ProfileCog(commands.Cog):
     @app_commands.command(name="ranking", description="View the Spot Zero agent leaderboard")
     async def ranking(self, interaction: discord.Interaction):
         """랭킹 보드 표시 (Cyberpunk Hall of Fame 스타일)"""
-        leaderboard = self.db.get_leaderboard(limit=10)
-        
-        if not leaderboard:
-            await interaction.response.send_message("No leaderboard data available.", ephemeral=True)
+        await interaction.response.defer()
+
+        try:
+            leaderboard = await asyncio.to_thread(self.db.get_leaderboard, 10)
+        except Exception as e:
+            logger.error(
+                "ranking 리더보드 조회 실패 user_id=%s error=%s",
+                interaction.user.id,
+                e,
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                f"❌ Failed to load leaderboard. Please try again later.\n`{e}`",
+                ephemeral=True,
+            )
             return
-        
+
+        if not leaderboard:
+            await interaction.followup.send("No leaderboard data available.", ephemeral=True)
+            return
+
         embed = discord.Embed(
             title="🏆 Spot Zero: Agent Leaderboard",
             description="> Top agents ranked by clearance level and mission completion.",
@@ -85,14 +103,22 @@ class ProfileCog(commands.Cog):
                     inline=False
                 )
         
-        # 사용자 자신의 순위 (20위 밖이면 표시)
+        # 사용자 자신의 순위 (10위 밖이면 표시)
         user_in_top_10 = any(entry['user_id'] == interaction.user.id for entry in leaderboard[:10])
-        
+
         if not user_in_top_10:
-            all_users = self.db.get_leaderboard(limit=1000)
+            try:
+                all_users = await asyncio.to_thread(self.db.get_leaderboard, 1000)
+            except Exception as e:
+                logger.warning(
+                    "ranking 본인 순위 조회 실패 user_id=%s error=%s",
+                    interaction.user.id,
+                    e,
+                )
+                all_users = []
             user_rank = None
             user_xp = None
-            
+
             for idx, entry in enumerate(all_users, 1):
                 if entry['user_id'] == interaction.user.id:
                     user_rank = idx
@@ -113,9 +139,24 @@ class ProfileCog(commands.Cog):
                 )
         
         embed.set_footer(text="Complete more missions to climb the ranks!")
-        
-        await interaction.response.send_message(embed=embed)
-    
+
+        try:
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            logger.exception(
+                "ranking 응답 전송 실패 user_id=%s error=%s",
+                interaction.user.id,
+                e,
+            )
+            try:
+                await interaction.followup.send(
+                    "❌ 랭킹을 표시하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+        return
+
     @app_commands.command(name="log", description="View your recent XP acquisition history")
     async def log(self, interaction: discord.Interaction):
         """XP 획득 이력 표시"""
@@ -126,6 +167,12 @@ class ProfileCog(commands.Cog):
             user = await asyncio.to_thread(self.db.get_or_create_user, interaction.user.id)
             xp_logs = await asyncio.to_thread(self.db.get_xp_logs, interaction.user.id, 15)
         except Exception as e:
+            logger.error(
+                "log XP 이력 조회 실패 user_id=%s error=%s",
+                interaction.user.id,
+                e,
+                exc_info=True,
+            )
             await interaction.followup.send(
                 f"❌ Failed to load XP history. Please try again later.\n`{e}`",
                 ephemeral=True,
@@ -160,6 +207,41 @@ class ProfileCog(commands.Cog):
         total_xp = user['total_xp']
         embed.set_footer(text=f"Total XP: {total_xp:,}")
         
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="users_tier", description="[Admin] List users with XP and tier for manual role assignment")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def users_tier(self, interaction: discord.Interaction):
+        """관리자 전용: user_id, total_xp, tier, tier_name 목록 (수동 롤 부여용)"""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            rows = await asyncio.to_thread(self.db.get_users_for_role_audit)
+        except Exception as e:
+            logger.error(
+                "users_tier 조회 실패 user_id=%s error=%s",
+                interaction.user.id,
+                e,
+                exc_info=True,
+            )
+            await interaction.followup.send(f"❌ 조회 실패: {e}", ephemeral=True)
+            return
+        if not rows:
+            await interaction.followup.send("등록된 유저가 없습니다.", ephemeral=True)
+            return
+        lines = ["user_id       | total_xp | tier | tier_name", "--------------+----------+------+------------------"]
+        for r in rows[:40]:
+            tier = r.get('tier') if r.get('tier') is not None else '?'
+            tier_name = r.get('tier_name') or '-'
+            lines.append(f"{r['user_id']:<13} | {r['total_xp']:>8} | Lv.{tier} | {tier_name}")
+        text = "```\n" + "\n".join(lines) + "\n```"
+        if len(rows) > 40:
+            text += f"\n*(상위 40명만 표시, 전체 {len(rows)}명)*"
+        embed = discord.Embed(
+            title="📋 Users × Tier (수동 롤 부여 참고)",
+            description=text,
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="롤이 자동 부여되지 않은 유저는 위 tier_name에 맞는 역할을 수동으로 부여하세요.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 

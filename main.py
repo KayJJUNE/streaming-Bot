@@ -1,11 +1,22 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import os
+import asyncio
+import logging
 from dotenv import load_dotenv
 from database import Database
 
 # 환경 변수 로드
 load_dotenv()
+
+# 로깅 설정 (유저 사용 중 문제 발생 시 로그 출력)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("bot")
 
 # 봇 설정
 intents = discord.Intents.default()
@@ -30,8 +41,8 @@ async def on_ready():
     except Exception as e:
         print(f'명령어 동기화 중 오류 발생: {e}')
     
-    # 서버 시작 시 모든 사용자 역할 업데이트
-    await update_all_user_roles()
+    # 서버 시작 시 모든 사용자 역할 업데이트 (백그라운드 실행해 슬래시 커맨드 3초 타임아웃 방지)
+    asyncio.create_task(update_all_user_roles())
 
 async def update_all_user_roles():
     """서버의 모든 사용자 역할 업데이트"""
@@ -126,7 +137,36 @@ async def on_command_error(ctx, error):
     """명령어 오류 처리"""
     if isinstance(error, commands.CommandNotFound):
         return
-    print(f'명령어 오류: {error}')
+    user_id = getattr(ctx.author, "id", None)
+    logger.error("명령어 오류 user_id=%s command=%s error=%s", user_id, getattr(ctx.command, "name", None), error)
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """슬래시 커맨드 실행 중 미처리 예외 발생 시 로그 출력 및 유저에게 안내"""
+    user_id = getattr(interaction.user, "id", None)
+    user_name = getattr(interaction.user, "display_name", str(user_id))
+    command_name = interaction.command.name if interaction.command else "unknown"
+    logger.exception(
+        "유저 커맨드 오류 user_id=%s user=%s command=%s error=%s",
+        user_id,
+        user_name,
+        command_name,
+        error,
+    )
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.send_message(
+                "❌ 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                ephemeral=True,
+            )
+        except Exception:
+            try:
+                await interaction.followup.send(
+                    "❌ 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
 
 # 봇 실행
 async def main():
